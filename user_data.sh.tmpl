@@ -1,0 +1,28 @@
+#!/bin/bash
+exec > /var/log/user-data.log 2>&1
+set -x
+
+yum update -y
+
+amazon-linux-extras enable python3.8
+yum install -y python3.8 unzip tar gzip
+
+# Install pip for Python 3.8 explicitly
+curl -O https://bootstrap.pypa.io/get-pip.py
+python3.8 get-pip.py
+
+# Install boto3 using the correct pip
+python3.8 -m pip install boto3
+
+yum install -y python3.8 unzip tar gzip python3-pip
+
+pip3 install boto3
+
+mkdir -p /home/ec2-user
+chown ec2-user:ec2-user /home/ec2-user
+
+aws s3 cp s3://${results_bucket_name}/scanner/scanner.py scanner.py
+
+chmod +x /home/ec2-user/scanner.py
+
+nohup python3.8 /home/ec2-user/scanner.py > /var/log/scanner.log 2>&1 &

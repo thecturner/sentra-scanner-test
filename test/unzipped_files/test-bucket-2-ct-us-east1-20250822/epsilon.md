@@ -1,0 +1,1 @@
+omega omega omega gamma delta beta gamma gamma omega beta alpha delta beta sigma omega omega gamma delta alpha alpha delta sigma alpha alpha sigma gamma alpha sigma beta sigma
