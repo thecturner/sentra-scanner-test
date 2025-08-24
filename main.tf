@@ -19,29 +19,17 @@ resource "aws_s3_bucket" "results" {
 resource "aws_s3_object" "scanner_py" {
   bucket       = aws_s3_bucket.results.id
   key          = "artifacts/scanner/scanner.py"
-  source       = "${path.module}/scanner_with_archive_support.py"
-  etag         = filemd5("${path.module}/scanner_with_archive_support.py")
+  source       = "${path.module}/scanner.py"
+  etag         = filemd5("${path.module}/scanner.py")
   content_type = "text/x-python"
 
     depends_on = [aws_s3_bucket.results]
 
 }
 
-
-resource "aws_s3_object" "scanner_script" {
-  bucket = var.results_bucket_name
-  key    = "scanner/scanner.py"
-  source = "${path.module}/scanner_with_archive_support.py"
-  etag   = filemd5("${path.module}/scanner_with_archive_support.py")
-
-    depends_on = [aws_s3_bucket.results]
-
-}
-
-
 resource "null_resource" "scanner_file_hash" {
   triggers = {
-    scanner_hash = filesha256("${path.module}/scanner_with_archive_support.py")
+    scanner_hash = filesha256("${path.module}/scanner.py")
   }
 }
 
@@ -113,23 +101,127 @@ resource "aws_key_pair" "scanner_key" {
   public_key = file("~/.ssh/id_ed25519.pub")
 }
 
+locals {
+  user_data_scanner_python38 = <<EOF
+#!/bin/bash
+exec > >(tee -a /var/log/user-data.log) 2>&1
+set -euxo pipefail
+
+# Python 3.8 and tools
+amazon-linux-extras enable python3.8
+yum clean metadata
+yum -y install python3.8 curl unzip tar gzip awscli
+
+# Pip for 3.8 on AL2
+curl -fsSL https://bootstrap.pypa.io/pip/3.8/get-pip.py -o /root/get-pip.py
+python3.8 /root/get-pip.py
+python3.8 -m pip install --upgrade pip boto3
+
+# App dirs
+install -d -m 755 /opt/sentra
+install -d -m 755 /var/log/s3scanner
+
+# Pull scanner with retries
+for i in 1 2 3 4 5; do
+  aws s3 cp "s3://${var.results_bucket_name}/artifacts/scanner/scanner.py" /opt/sentra/scanner.py --region "${var.aws_region}" \
+    && break || { echo "retry $i"; sleep 5; }
+done
+chmod 755 /opt/sentra/scanner.py
+
+# Wrapper selects dev or s3 mode
+cat >/opt/sentra/run_scanner.sh <<'RUNEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+PY="/usr/bin/python3.8"
+SCRIPT="/opt/sentra/scanner.py"
+
+OPTS=()
+if [[ "$${SCANNER_DEV_MODE:-0}" == "1" || "$${SCANNER_DEV_MODE:-false}" == "true" ]]; then
+  OUT_DIR="$${SCANNER_OUT_DIR:-/var/log/s3scanner}"
+  mkdir -p "$${OUT_DIR}"
+  OPTS+=(--dev --out "$${OUT_DIR}")
+else
+  if [[ -z "$${RESULTS_BUCKET:-}" ]]; then
+    echo "RESULTS_BUCKET is required for non-dev runs" >&2
+    exit 2
+  fi
+  OPTS+=(--results-bucket "$${RESULTS_BUCKET}")
+fi
+
+OPTS+=(--max-workers "$${SCANNER_MAX_WORKERS:-16}")
+OPTS+=(--sample-bytes "$${SCANNER_SAMPLE_BYTES:-1048576}")
+OPTS+=(--archive-bytes-limit "$${SCANNER_ARCHIVE_BYTES_LIMIT:-1048576}")
+OPTS+=(--inner-member-read-limit "$${SCANNER_INNER_MEMBER_READ_LIMIT:-131072}")
+OPTS+=(--total-archive-read-budget "$${SCANNER_TOTAL_ARCHIVE_READ_BUDGET:-1048576}")
+
+export AWS_DEFAULT_REGION="$${AWS_REGION:-$${AWS_DEFAULT_REGION:-}}"
+export SCANNER_WRITE_LEGACY_OUTPUTS="$${SCANNER_WRITE_LEGACY_OUTPUTS:-1}"
+
+exec "$${PY}" "$${SCRIPT}" "$${OPTS[@]}"
+RUNEOF
+chmod +x /opt/sentra/run_scanner.sh
+
+# systemd unit
+cat >/etc/systemd/system/scanner.service <<'UNIT'
+[Unit]
+Description=Sentra S3 Scanner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sentra
+Environment=AWS_REGION=${var.aws_region}
+Environment=RESULTS_BUCKET=${var.results_bucket_name}
+Environment=SCANNER_DEV_MODE=${var.scanner_dev_mode}
+Environment=SCANNER_OUT_DIR=${var.scanner_out_dir}
+Environment=SCANNER_MAX_WORKERS=${var.scanner_max_workers}
+Environment=SCANNER_SAMPLE_BYTES=${var.scanner_sample_bytes}
+Environment=SCANNER_ARCHIVE_BYTES_LIMIT=${var.scanner_archive_bytes_limit}
+Environment=SCANNER_INNER_MEMBER_READ_LIMIT=${var.scanner_inner_member_read_limit}
+Environment=SCANNER_TOTAL_ARCHIVE_READ_BUDGET=${var.scanner_total_archive_read_budget}
+Environment=SCANNER_WRITE_LEGACY_OUTPUTS=${var.scanner_write_legacy_outputs}
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/bin/bash -lc '/opt/sentra/run_scanner.sh >> /var/log/scanner.log 2>&1'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now scanner
+EOF
+}
+
 data "template_cloudinit_config" "scanner_userdata" {
   gzip          = true
   base64_encode = true
 
   part {
     content_type = "text/cloud-config"
-    content = <<EOF
+    content      = <<-EOF
 #cloud-config
+packages:
+  - python3
+  - python3-pip
+  - awscli
+  - unzip
+  - tar
+  - gzip
+
 write_files:
   - path: /etc/systemd/system/scanner.service
+    permissions: "0644"
     owner: root:root
-    permissions: '0644'
     content: |
       [Unit]
       Description=Sentra Sample S3 Scanner
-      After=network-online.target cloud-init.service
+      After=network-online.target cloud-final.service
       Wants=network-online.target
+      ConditionPathExists=/opt/sentra/scanner.py
 
       [Service]
       Type=simple
@@ -144,20 +236,10 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 
-packages:
-  - python3
-  - python3-pip
-  - unzip
-  - tar
-  - gzip
-
 runcmd:
   - mkdir -p /opt/sentra
   - chown ec2-user:ec2-user /opt/sentra
-  - BUCKET="sentra-results-bucket-ct-us-east1-20250822"
-  - KEY="artifacts/scanner/scanner.py"
-  - REGION="us-east-1"
-  - aws s3 cp "s3://${BUCKET}/${KEY}" /opt/sentra/scanner.py --region "${REGION}" && head -5 -o /opt/sentra/scanner.py
+  - 'for i in 1 2 3 4 5; do aws s3 cp "s3://${aws_s3_bucket.results.bucket}/artifacts/scanner/scanner.py" /opt/sentra/scanner.py --region "${var.aws_region}" && break || (echo "retry $i"; sleep 5); done'
   - chmod +x /opt/sentra/scanner.py
   - pip3 install --upgrade pip
   - pip3 install --no-cache-dir boto3
@@ -167,7 +249,6 @@ EOF
   }
 }
 
-
 resource "aws_instance" "scanner_vm" {
   ami                    = "ami-0c02fb55956c7d316"
   instance_type          = "t3.micro"
@@ -175,7 +256,7 @@ resource "aws_instance" "scanner_vm" {
   vpc_security_group_ids = [aws_security_group.scanner_sg.id]
   key_name = aws_key_pair.scanner_key.key_name
 
-  user_data_base64 = data.template_cloudinit_config.scanner_userdata.rendered
+  user_data              = local.user_data_scanner_python38
 
   tags = {
     Name = "scanner-vm"

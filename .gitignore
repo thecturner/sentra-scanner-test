@@ -143,6 +143,7 @@ tmp/
 # =====================
 
 # JetBrains IDEs (PyCharm, IntelliJ, WebStorm, etc.)
+.pythonProject/
 .idea/
 
 # VS Code
@@ -217,3 +218,6 @@ $RECYCLE.BIN/
 # Trash folders
 .trash/
 .Trash-*
+
+# Output folder
+/scanner_out/*
