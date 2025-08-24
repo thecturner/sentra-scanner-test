@@ -154,7 +154,10 @@ packages:
 runcmd:
   - mkdir -p /opt/sentra
   - chown ec2-user:ec2-user /opt/sentra
-  - curl -fSL "https://${aws_s3_bucket.results.bucket}.s3.${var.aws_region}.amazonaws.com/${aws_s3_object.scanner_py.key}" -o /opt/sentra/scanner.py
+  - BUCKET="sentra-results-bucket-ct-us-east1-20250822"
+  - KEY="artifacts/scanner/scanner.py"
+  - REGION="us-east-1"
+  - aws s3 cp "s3://${BUCKET}/${KEY}" /opt/sentra/scanner.py --region "${REGION}" && head -5 -o /opt/sentra/scanner.py
   - chmod +x /opt/sentra/scanner.py
   - pip3 install --upgrade pip
   - pip3 install --no-cache-dir boto3
