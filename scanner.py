@@ -12,7 +12,6 @@ S3 Scanner with "dev mode" and results shaped like:
 }
 
 Key points.
-- No functionality removed. We still:
   . Scan ALL buckets the current identity can access.
   . Use concurrency.
   . Maintain a manifest to avoid rescanning unchanged objects.
@@ -20,17 +19,17 @@ Key points.
   . Peek into small archives and scan their contents.
   . Optionally write legacy outputs (JSONL + CSV) for backward compatibility.
 
-- New main results file:
+- Main results file:
   . One JSON file aggregating findings per bucket->object per schema above.
   . In dev mode, written to a local directory.
   . In non-dev mode, written to S3.
 
 "Findings" are simple pattern matches extracted from sampled bytes and small archives:
   . Email addresses.
-  . IPv4 addresses.
-  . AWS Access Key IDs (AKIA/ASIAxxxxxxxxxxxxxxxx).
+  . IPv4 addresses. (commented out)
+  . AWS Access Key IDs (AKIA/ASIAxxxxxxxxxxxxxxxx). (commented out)
 
-You can control limits and behavior via CLI flags and env vars below.
+You can control limits and behavior via CLI flags and env vars.
 """
 
 import argparse

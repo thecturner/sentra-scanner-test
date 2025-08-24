@@ -1,0 +1,6 @@
+# Minimal deps the scanner needs. The code primarily uses boto3 and stdlib.
+boto3>=1.34.0,<2
+botocore>=1.34.0,<2
+# Add optional utilities if you later wire them in:
+# chardet>=5.2.0
+# python-dateutil>=2.9.0

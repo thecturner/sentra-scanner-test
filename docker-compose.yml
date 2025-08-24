@@ -1,0 +1,36 @@
+version: "3.9"
+services:
+  scanner:
+    build: .
+    image: sentra-scanner:local
+    # By default run scanner.py. Switch to simple_scanner.py by overriding env below.
+    environment:
+      # AWS auth. For local dev you can mount ~/.aws below or export these in your shell.
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+
+      # App configuration. The Python code may read envs or be hardcoded.
+      # Keep these here so you can wire them in later without rebuilding.
+      RESULTS_BUCKET: ${RESULTS_BUCKET:-sentra-results-bucket}
+      RESULTS_PREFIX: ${RESULTS_PREFIX:-scans/}
+      RESCAN_MANIFEST_KEY: ${RESCAN_MANIFEST_KEY:-manifests/s3-scan.json}
+      THREADS: ${THREADS:-8}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+      # Choose which script to run and optional CLI args.
+      SCANNER_SCRIPT: ${SCANNER_SCRIPT:-scanner.py}
+      SCANNER_ARGS: ${SCANNER_ARGS:-}
+
+    # Mount your AWS credentials for local testing. Remove on CI/CD.
+    volumes:
+      - ${HOME:-~}/.aws:/home/appuser/.aws:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1g
+        reservations:
+          cpus: '0.25'
+          memory: 256m

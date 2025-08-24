@@ -1,0 +1,42 @@
+# VCS & editor
+.git
+.gitignore
+.gitattributes
+.github
+.idea
+.vscode
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.venv
+venv/
+
+# Terraform / cloud
+.terraform/
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+terraform.tfvars
+terraform.tfvars.json
+*.backup
+.terragrunt-cache/
+
+# Local
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+!README*.md
