@@ -9,6 +9,7 @@ This folder adds a container build that runs the scanner code inside a minimal P
 - `.dockerignore` . Keeps the image lean . ignores build noise and Terraform state.
 - `docker-compose.yml` . Local dev runner . passes AWS creds and runtime envs.
 - `env.example` . Copy to `.env` to keep your local settings out of git.
+- `healthcheck.sh` . Lightweight liveness. Zero network calls. No S3 access. Prove the container can load and compile your scanner code.
 - `Makefile` . Handy build/run/push helpers.
 
 ## Quick start

@@ -3,17 +3,55 @@ provider "aws" {
   region = "us-east-1"
 }
 
-data "template_file" "user_data" {
-  template = file("${path.module}/user_data.sh.tmpl")
-
-  vars = {
-    results_bucket_name = var.results_bucket_name
-  }
+#data "template_file" "user_data" {
+#  template = file("${path.module}/user_data.sh.tmpl")
+#
+#  vars = {
+#    results_bucket_name = var.results_bucket_name
+#  }
+#}
+# KMS key to encrypt objects in the results bucket.
+resource "aws_kms_key" "results_cmk" {
+  description             = "CMK for encrypting S3 results bucket objects"
+  enable_key_rotation     = true
+  deletion_window_in_days = 30
 }
 
 resource "aws_s3_bucket" "results" {
   bucket = var.results_bucket_name
   force_destroy = true
+}
+
+# Block all forms of public access on the results bucket.
+resource "aws_s3_bucket_public_access_block" "results_pab" {
+  bucket                  = aws_s3_bucket.results.id
+  block_public_acls       = true
+  ignore_public_acls      = true
+  block_public_policy     = true
+  restrict_public_buckets = true
+
+    depends_on = [aws_s3_bucket.results]
+}
+
+# Default server-side encryption for all new objects.
+resource "aws_s3_bucket_server_side_encryption_configuration" "results_sse" {
+  bucket = aws_s3_bucket.results.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.results_cmk.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_versioning" "results_ver" {
+  bucket = aws_s3_bucket.results.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
 }
 
 resource "aws_s3_object" "scanner_py" {
@@ -81,9 +119,10 @@ resource "aws_security_group" "scanner_sg" {
   }
 
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    description = "Allow HTTPS egress to the internet for updates and S3 over TLS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
@@ -196,67 +235,83 @@ systemctl enable --now scanner
 EOF
 }
 
-data "template_cloudinit_config" "scanner_userdata" {
-  gzip          = true
-  base64_encode = true
-
-  part {
-    content_type = "text/cloud-config"
-    content      = <<-EOF
-#cloud-config
-packages:
-  - python3
-  - python3-pip
-  - awscli
-  - unzip
-  - tar
-  - gzip
-
-write_files:
-  - path: /etc/systemd/system/scanner.service
-    permissions: "0644"
-    owner: root:root
-    content: |
-      [Unit]
-      Description=Sentra Sample S3 Scanner
-      After=network-online.target cloud-final.service
-      Wants=network-online.target
-      ConditionPathExists=/opt/sentra/scanner.py
-
-      [Service]
-      Type=simple
-      User=ec2-user
-      Environment=PYTHONUNBUFFERED=1
-      ExecStart=/usr/bin/python3 /opt/sentra/scanner.py
-      Restart=on-failure
-      RestartSec=5s
-      StandardOutput=append:/var/log/scanner.log
-      StandardError=append:/var/log/scanner.log
-
-      [Install]
-      WantedBy=multi-user.target
-
-runcmd:
-  - mkdir -p /opt/sentra
-  - chown ec2-user:ec2-user /opt/sentra
-  - 'for i in 1 2 3 4 5; do aws s3 cp "s3://${aws_s3_bucket.results.bucket}/artifacts/scanner/scanner.py" /opt/sentra/scanner.py --region "${var.aws_region}" && break || (echo "retry $i"; sleep 5); done'
-  - chmod +x /opt/sentra/scanner.py
-  - pip3 install --upgrade pip
-  - pip3 install --no-cache-dir boto3
-  - systemctl daemon-reload
-  - systemctl enable --now scanner
-EOF
-  }
-}
+#data "template_cloudinit_config" "scanner_userdata" {
+#  gzip          = true
+#  base64_encode = true
+#
+#  part {
+#    content_type = "text/cloud-config"
+#    content      = <<-EOF
+##cloud-config
+#packages:
+#  - python3
+#  - python3-pip
+#  - awscli
+#  - unzip
+#  - tar
+#  - gzip
+#
+#write_files:
+#  - path: /etc/systemd/system/scanner.service
+#    permissions: "0644"
+#    owner: root:root
+#    content: |
+#      [Unit]
+#      Description=Sentra Sample S3 Scanner
+#      After=network-online.target cloud-final.service
+#      Wants=network-online.target
+#      ConditionPathExists=/opt/sentra/scanner.py
+#
+#      [Service]
+#      Type=simple
+#      User=ec2-user
+#      Environment=PYTHONUNBUFFERED=1
+#      ExecStart=/usr/bin/python3 /opt/sentra/scanner.py
+#      Restart=on-failure
+#      RestartSec=5s
+#      StandardOutput=append:/var/log/scanner.log
+#      StandardError=append:/var/log/scanner.log
+#
+#      [Install]
+#      WantedBy=multi-user.target
+#
+#runcmd:
+#  - mkdir -p /opt/sentra
+#  - chown ec2-user:ec2-user /opt/sentra
+#  - 'for i in 1 2 3 4 5; do aws s3 cp "s3://${aws_s3_bucket.results.bucket}/artifacts/scanner/scanner.py" /opt/sentra/scanner.py --region "${var.aws_region}" && break || (echo "retry $i"; sleep 5); done'
+#  - chmod +x /opt/sentra/scanner.py
+#  - pip3 install --upgrade pip
+#  - pip3 install --no-cache-dir boto3
+#  - systemctl daemon-reload
+#  - systemctl enable --now scanner
+#EOF
+#  }
+#}
 
 resource "aws_instance" "scanner_vm" {
-  ami                    = "ami-0c02fb55956c7d316"
-  instance_type          = "t3.micro"
+  ami                    = var.ami_id
+  instance_type          = var.instance_type
   iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
   vpc_security_group_ids = [aws_security_group.scanner_sg.id]
   key_name = aws_key_pair.scanner_key.key_name
 
   user_data              = local.user_data_scanner_python38
+
+  metadata_options {
+    http_endpoint               = "enabled"   # keep IMDS (instance metedata service) reachable on the instance
+    http_tokens                 = "required"  # force IMDSv2. block IMDSv1 making blind Server-Side Request Forgery harder
+    http_put_response_hop_limit = 2           # typical default. limits token reuse via proxies
+  }
+
+  root_block_device {
+  encrypted   = true
+  # Using the S3 CMK we create. Otherwise omit kms_key_id to use default EBS CMK.
+  kms_key_id  = aws_kms_key.results_cmk.arn
+  volume_type = "gp3"
+  volume_size = 20
+  }
+
+
 
   tags = {
     Name = "scanner-vm"

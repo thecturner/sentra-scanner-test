@@ -24,6 +24,81 @@ resource "aws_s3_bucket" "test_buckets" {
   force_destroy = true
 }
 
+# One CMK for all test buckets
+resource "aws_kms_key" "test_cmk" {
+  description         = "CMK for encrypting test S3 buckets"
+  enable_key_rotation = true
+}
+
+# Public access block for every test bucket
+resource "aws_s3_bucket_public_access_block" "test_pab" {
+  for_each = aws_s3_bucket.test_buckets
+
+  bucket                  = each.value.id
+  block_public_acls       = true
+  ignore_public_acls      = true
+  block_public_policy     = true
+  restrict_public_buckets = true
+}
+
+# Default SSE for every test bucket using the CMK
+resource "aws_s3_bucket_server_side_encryption_configuration" "test_sse" {
+  for_each = aws_s3_bucket.test_buckets
+
+  bucket = each.value.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.test_cmk.arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+# Versioning on for every test bucket
+resource "aws_s3_bucket_versioning" "test_versioning" {
+  for_each = aws_s3_bucket.test_buckets
+
+  bucket = each.value.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# Per-bucket logs bucket. keeps names predictable.
+resource "aws_s3_bucket" "test_logs" {
+  for_each = aws_s3_bucket.test_buckets
+
+  bucket        = "${each.key}-logs"
+  force_destroy = true
+}
+
+resource "aws_s3_bucket_acl" "test_logs_acl" {
+  for_each = aws_s3_bucket.test_logs
+  bucket   = each.value.id
+  acl      = "log-delivery-write"
+}
+
+resource "aws_s3_bucket_public_access_block" "test_logs_pab" {
+  for_each = aws_s3_bucket.test_logs
+
+  bucket                  = each.value.id
+  block_public_acls       = true
+  ignore_public_acls      = true
+  block_public_policy     = true
+  restrict_public_buckets = true
+}
+
+# Enable access logging to each test bucket's own logs bucket
+resource "aws_s3_bucket_logging" "test_logging" {
+  for_each = aws_s3_bucket.test_buckets
+
+  bucket        = each.value.id
+  target_bucket = aws_s3_bucket.test_logs[each.key].id
+  target_prefix = "s3-access/"
+}
+
 resource "aws_s3_object" "zips" {
   for_each = local.zip_map
 

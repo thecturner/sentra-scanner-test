@@ -30,3 +30,10 @@ USER appuser
 # Ensure clean PID 1 and signal handling
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["bash", "-lc", "python -u /app/${SCANNER_SCRIPT} ${SCANNER_ARGS}"]
+
+# Copy the healthcheck helper into a known absolute path.
+COPY healthcheck.sh /healthcheck.sh
+
+# Docker runs this on a schedule and marks the container healthy or unhealthy.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD /healthcheck.sh
