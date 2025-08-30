@@ -44,6 +44,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "results_sse" {
     }
     bucket_key_enabled = true
   }
+
+    depends_on = [aws_kms_key.results_cmk]
 }
 
 resource "aws_s3_bucket_versioning" "results_ver" {
@@ -61,8 +63,84 @@ resource "aws_s3_object" "scanner_py" {
   etag         = filemd5("${path.module}/scanner.py")
   content_type = "text/x-python"
 
+  server_side_encryption = "aws:kms"
+  kms_key_id             = aws_kms_key.results_cmk.arn
+
     depends_on = [aws_s3_bucket.results]
 
+}
+
+
+
+data "aws_iam_policy_document" "results_bucket_policy" {
+  statement {
+    sid     = "DenyInsecureTransport"
+    effect  = "Deny"
+    actions = ["s3:*"]
+    principals {
+      type = "*"
+      identifiers = ["*"]
+    }
+    resources = [
+      aws_s3_bucket.results.arn,
+      "${aws_s3_bucket.results.arn}/*"
+    ]
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+
+  statement {
+    sid     = "DenyUnencryptedObjectUploads"
+    effect  = "Deny"
+    actions = ["s3:PutObject"]
+    principals {
+      type = "*"
+      identifiers = ["*"]
+    }
+    resources = ["${aws_s3_bucket.results.arn}/*"]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:x-amz-server-side-encryption"
+      values   = ["aws:kms"]
+    }
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"
+      values   = [aws_kms_key.results_cmk.arn]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "results_policy" {
+  bucket = aws_s3_bucket.results.id
+  policy = data.aws_iam_policy_document.results_bucket_policy.json
+
+    depends_on = [aws_kms_key.results_cmk]
+}
+
+# Build a least-privilege policy for using the results CMK
+data "aws_iam_policy_document" "kms_for_results" {
+  statement {
+    sid    = "AllowUseOfResultsCmkForS3"
+    effect = "Allow"
+    actions = [
+      "kms:Encrypt",
+      "kms:Decrypt",
+      "kms:GenerateDataKey*",
+      "kms:DescribeKey",
+    ]
+    resources = [aws_kms_key.results_cmk.arn]
+  }
+}
+
+resource "aws_iam_policy" "kms_for_results" {
+  name        = "kms-for-results-cmk"
+  description = "Use results CMK for S3 object encryption and decryption"
+  policy      = data.aws_iam_policy_document.kms_for_results.json
 }
 
 resource "null_resource" "scanner_file_hash" {
@@ -83,6 +161,12 @@ resource "aws_iam_role" "ec2_role" {
       Action = "sts:AssumeRole"
     }]
   })
+}
+
+# Attach to the EC2 role used by aws_iam_instance_profile.ec2_profile
+resource "aws_iam_role_policy_attachment" "ec2_results_kms" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = aws_iam_policy.kms_for_results.arn
 }
 
 resource "aws_iam_policy" "scanner_policy" {
@@ -318,5 +402,57 @@ resource "aws_instance" "scanner_vm" {
   }
 
   depends_on = [null_resource.scanner_file_hash]
+}
+
+resource "aws_s3_bucket" "results_logs" {
+  bucket        = "${var.results_bucket_name}-logs"
+  force_destroy = true
+}
+
+resource "aws_s3_bucket_ownership_controls" "results_logs_owner" {
+  bucket = aws_s3_bucket.results_logs.id
+  rule { object_ownership = "BucketOwnerPreferred" }
+}
+
+resource "aws_s3_bucket_acl" "results_logs_acl" {
+  bucket     = aws_s3_bucket.results_logs.id
+  acl        = "log-delivery-write"
+  depends_on = [aws_s3_bucket_ownership_controls.results_logs_owner]
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "results_logs_sse" {
+  bucket = aws_s3_bucket.results_logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.results_cmk.arn
+    }
+    bucket_key_enabled = true
+  }
+
+    depends_on = [aws_kms_key.results_cmk]
+}
+
+resource "aws_s3_bucket_versioning" "results_logs_ver" {
+  bucket = aws_s3_bucket.results_logs.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "results_logs_pab" {
+  bucket                  = aws_s3_bucket.results_logs.id
+  block_public_acls       = true
+  ignore_public_acls      = true
+  block_public_policy     = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_logging" "results_logging" {
+  bucket        = aws_s3_bucket.results.id
+  target_bucket = aws_s3_bucket.results_logs.id
+  target_prefix = "s3-access/"
 }
 

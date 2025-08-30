@@ -27,3 +27,29 @@ terraform apply
    - Upload each zip file into the corresponding bucket
 
 You can now run your email-scanning deployment against these test buckets.
+
+## S3 security controls (test buckets)
+
+- All test buckets enforce TLS: requests over plain HTTP are denied.
+- All test buckets require SSE-KMS with the shared CMK on PUT:
+  - Clients (and Terraform aws_s3_object) must set:
+    - `x-amz-server-side-encryption: aws:kms`
+    - `x-amz-server-side-encryption-aws-kms-key-id: <test CMK arn>`
+- Each data bucket writes **server access logs** to its paired `*-logs` bucket under `s3-access/`.
+- Public access is blocked at the bucket level via Public Access Block.
+
+### Terraform writers
+Terraform resources that upload to S3 (e.g., `aws_s3_object`) are configured to send SSE-KMS headers automatically.
+
+## S3 security controls (test buckets)
+
+- All test buckets enforce TLS: requests over plain HTTP are denied.
+- All test buckets require SSE-KMS with the shared CMK on PUT:
+  - Clients (and Terraform aws_s3_object) must set:
+    - `x-amz-server-side-encryption: aws:kms`
+    - `x-amz-server-side-encryption-aws-kms-key-id: <test CMK arn>`
+- Each data bucket writes **server access logs** to its paired `*-logs` bucket under `s3-access/`.
+- Public access is blocked at the bucket level via Public Access Block.
+
+### Terraform writers
+Terraform resources that upload to S3 (e.g., `aws_s3_object`) are configured to send SSE-KMS headers automatically.

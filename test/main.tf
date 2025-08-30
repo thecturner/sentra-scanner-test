@@ -2,6 +2,12 @@ provider "aws" {
   region = "us-east-1"
 }
 
+# One CMK for all test buckets
+resource "aws_kms_key" "test_cmk" {
+  description         = "CMK for encrypting test S3 buckets"
+  enable_key_rotation = true
+}
+
 variable "bucket_names" {
   default = [
     "test-bucket-1-ct-us-east1-20250822",
@@ -24,15 +30,19 @@ resource "aws_s3_bucket" "test_buckets" {
   force_destroy = true
 }
 
-# One CMK for all test buckets
-resource "aws_kms_key" "test_cmk" {
-  description         = "CMK for encrypting test S3 buckets"
-  enable_key_rotation = true
-}
-
 # Public access block for every test bucket
 resource "aws_s3_bucket_public_access_block" "test_pab" {
   for_each = aws_s3_bucket.test_buckets
+
+  bucket                  = each.value.id
+  block_public_acls       = true
+  ignore_public_acls      = true
+  block_public_policy     = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_public_access_block" "test_logs_pab" {
+  for_each = aws_s3_bucket.test_logs
 
   bucket                  = each.value.id
   block_public_acls       = true
@@ -54,6 +64,9 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "test_sse" {
     }
     bucket_key_enabled = true
   }
+
+  depends_on = [aws_kms_key.test_cmk]
+
 }
 
 # Versioning on for every test bucket
@@ -66,6 +79,60 @@ resource "aws_s3_bucket_versioning" "test_versioning" {
   }
 }
 
+data "aws_iam_policy_document" "test_bucket_policy" {
+  for_each = aws_s3_bucket.test_buckets
+
+  statement {
+    sid     = "DenyInsecureTransport"
+    effect  = "Deny"
+    actions = ["s3:*"]
+    principals {
+      type = "*"
+      identifiers = ["*"]
+    }
+    resources = [
+      each.value.arn,
+      "${each.value.arn}/*"
+    ]
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+
+  statement {
+    sid     = "DenyUnencryptedObjectUploads"
+    effect  = "Deny"
+    actions = ["s3:PutObject"]
+    principals {
+      type = "*"
+      identifiers = ["*"]
+    }
+    resources = ["${each.value.arn}/*"]
+
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:x-amz-server-side-encryption"
+      values   = ["aws:kms"]
+    }
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"
+      values   = [aws_kms_key.test_cmk.arn]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "test_policy" {
+  for_each = aws_s3_bucket.test_buckets
+  bucket   = each.value.id
+  policy   = data.aws_iam_policy_document.test_bucket_policy[each.key].json
+
+  depends_on = [aws_kms_key.test_cmk]
+
+}
+
 # Per-bucket logs bucket. keeps names predictable.
 resource "aws_s3_bucket" "test_logs" {
   for_each = aws_s3_bucket.test_buckets
@@ -74,20 +141,25 @@ resource "aws_s3_bucket" "test_logs" {
   force_destroy = true
 }
 
+
+
+# Enable ACLs for log-delivery-write by preferring bucket owner
+resource "aws_s3_bucket_ownership_controls" "test_logs_owner" {
+  for_each = aws_s3_bucket.test_logs
+
+  bucket = each.value.id
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
 resource "aws_s3_bucket_acl" "test_logs_acl" {
   for_each = aws_s3_bucket.test_logs
   bucket   = each.value.id
   acl      = "log-delivery-write"
-}
 
-resource "aws_s3_bucket_public_access_block" "test_logs_pab" {
-  for_each = aws_s3_bucket.test_logs
+  depends_on = [aws_s3_bucket_ownership_controls.test_logs_owner]
 
-  bucket                  = each.value.id
-  block_public_acls       = true
-  ignore_public_acls      = true
-  block_public_policy     = true
-  restrict_public_buckets = true
 }
 
 # Enable access logging to each test bucket's own logs bucket
@@ -106,8 +178,10 @@ resource "aws_s3_object" "zips" {
   key    = each.value
   source = "${path.module}/${each.value}"
   etag   = filemd5("${path.module}/${each.value}")
+  server_side_encryption = "aws:kms"
+  kms_key_id             = aws_kms_key.test_cmk.arn
 
-  depends_on = [aws_s3_bucket.test_buckets]
+depends_on = [aws_s3_bucket.test_buckets]
 }
 
 # Updated to use zsh script and read from output file
@@ -131,6 +205,8 @@ resource "aws_s3_object" "unzipped" {
   key    = each.value.key
   source = each.value.source
   etag   = each.value.etag
+  server_side_encryption = "aws:kms"
+  kms_key_id             = aws_kms_key.test_cmk.arn
 
-  depends_on = [aws_s3_bucket.test_buckets]
+depends_on = [aws_s3_bucket.test_buckets]
 }

@@ -1,0 +1,66 @@
+name: Terraform apply. Manual. Protected.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type APPLY to confirm you want to run terraform apply"
+        required: true
+        default: "APPLY"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  TERRAFORM_VERSION: 1.9.5
+
+jobs:
+  apply:
+    name: terraform apply with approval
+    runs-on: ubuntu-latest
+
+    # Require an explicit APPLY input to reduce accidents
+    if: ${{ github.event.inputs.confirm == 'APPLY' }}
+
+    # Gate by environment approval in repo settings
+    environment:
+      name: aws-prod
+
+    concurrency:
+      group: terraform-apply-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Install jq for helper script
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          chmod +x get_my_ip.sh || true
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: terraform init
+        run: terraform init -input=false
+
+      - name: terraform plan before apply
+        run: terraform plan -input=false -no-color
+
+      - name: terraform apply
+        run: terraform apply -input=false -auto-approve
+
+      - name: Show outputs
+        run: terraform output -json || true

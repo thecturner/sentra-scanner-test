@@ -1,0 +1,120 @@
+name: CI. Terraform plan and Docker build
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+# Minimal permissions plus OIDC for AWS
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  # Change the Terraform version if you need to
+  TERRAFORM_VERSION: 1.9.5
+
+jobs:
+  terraform_plan:
+    name: Terraform fmt validate plan
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('**/*.tf') != '' }}
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Install tools needed by your helper script
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          chmod +x get_my_ip.sh || true
+
+      # Configure AWS using GitHub OIDC. Preferred approach.
+      # Create role and trust for GitHub before using this.
+      # Docs: aws-actions/configure-aws-credentials
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # If you do not want OIDC, comment the step above and
+      # un-comment the step below. You must add the three secrets.
+      # - name: Configure AWS with long-lived keys
+      #   uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      #     aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      #     aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+      #     aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      # Keep your HCL tidy
+      - name: terraform fmt check
+        run: terraform fmt -check -recursive
+
+      # Init without interactive prompts
+      - name: terraform init
+        run: terraform init -input=false
+
+      # Validate syntax and provider wiring
+      - name: terraform validate
+        run: terraform validate -no-color
+
+      # Plan. If your code requires TF_VAR_* values, add them in repo secrets
+      # then they will be available here automatically as environment variables.
+      - name: terraform plan
+        run: terraform plan -input=false -no-color -out=tfplan
+
+      # Save the plan file and logs for review in PRs
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: tfplan
+
+  docker_build_and_test:
+    name: Docker build and smoke test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      # Buildx gives modern BuildKit features
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Local build only. No registry push.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: sentra-scanner-test:${{ github.sha }}
+
+      # Simple smoke test that does not assume app specifics.
+      # First try Python. If not present, fall back to a shell check.
+      - name: Container smoke test
+        run: |
+          set -e
+          if docker run --rm sentra-scanner-test:${{ github.sha }} python -V; then
+            echo "Python present. Container started."
+          else
+            echo "Python not found. Trying a generic shell smoke test."
+            docker run --rm sentra-scanner-test:${{ github.sha }} sh -c 'echo container_ok'
+          fi
+
+      # Optional. Validate docker-compose file if present.
+      - name: Validate docker-compose.yml
+        if: ${{ hashFiles('docker-compose.yml') != '' }}
+        run: docker compose config

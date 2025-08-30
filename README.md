@@ -126,3 +126,13 @@ This scanner is suitable for automated security audits or compliance scans acros
 ---
 
 This setup ensures scalable, cost-effective, and easily extendable scans across your entire S3 landscape.
+
+Notes:
+Bucket policy requires SSE-KMS. Set these headers or the write is denied:
+- `x-amz-server-side-encryption: aws:kms`
+- `x-amz-server-side-encryption-aws-kms-key-id: <CMK ARN>`
+
+Notes:
+Bucket policy requires SSE-KMS. Set these headers or the write is denied:
+- `x-amz-server-side-encryption: aws:kms`
+- `x-amz-server-side-encryption-aws-kms-key-id: <CMK ARN>`

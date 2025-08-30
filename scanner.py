@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, Set
 
 import boto3
-from botocore.exceptions import ClientError, EndpointConnectionError, BotoCoreError
+from botocore.exceptions import ClientError, NoCredentialsError, EndpointConnectionError, BotoCoreError
 
 # ---------------------------
 # Defaults and configuration
@@ -78,6 +78,78 @@ RESULTS_PREFIX = "scanner/results"
 METADATA_PREFIX = "scanner/metadata"
 FINAL_RESULTS_BASENAME = "full_scan_results.json"  # main new schema file name
 
+
+# ---------------------------
+# Secure S3 Access helpers
+# Due to use of SSE-KMS enforcement on PUTS these helpers are necessary
+# They are meant to allow discovery of the CMK from the bucket securely
+# We don't hardcode a key, allowing unilateral rotation of CMK's and updates of bucket encryption
+# ---------------------------
+#setting up our client for s3 access
+_s3_client = boto3.client("s3")
+#initializing the KMS ARN cache
+_KMS_ARN_CACHE: Dict[str, str] = {}
+
+
+def resolve_bucket_kms_arn(bucket: str) -> str:
+    """
+    Ask S3 which CMK the bucket uses for default encryption.
+    Returns the CMK ARN or key ID string that S3 expects for SSE-KMS uploads.
+    Caches per-bucket to avoid repeated API calls.
+    """
+    if bucket in _KMS_ARN_CACHE:
+        return _KMS_ARN_CACHE[bucket]
+
+    try:
+        resp = _s3_client.get_bucket_encryption(Bucket=bucket)
+        rules = resp["ServerSideEncryptionConfiguration"]["Rules"]
+        for rule in rules:
+            by_default = rule.get("ApplyServerSideEncryptionByDefault", {})
+            if by_default.get("SSEAlgorithm") == "aws:kms":
+                kms_id = by_default.get("KMSMasterKeyID")
+                if not kms_id:
+                    raise RuntimeError(f"No KMSMasterKeyID found for bucket {bucket}")
+                _KMS_ARN_CACHE[bucket] = kms_id
+                return kms_id
+        raise RuntimeError(f"No aws:kms rule found on bucket {bucket}")
+    except _s3_client.exceptions.ServerSideEncryptionConfigurationNotFoundError:
+        raise RuntimeError(
+            f"Bucket {bucket} has no default encryption. "
+            "Enable SSE-KMS in Terraform or relax the bucket policy."
+        )
+    except (ClientError, NoCredentialsError) as e:
+        raise RuntimeError(f"Could not resolve KMS key for bucket {bucket}: {e}")
+
+def put_json_secure(bucket: str, key: str, obj: dict) -> None:
+    """
+    Upload JSON with SSE-KMS enforced.
+    """
+    kms_arn = resolve_bucket_kms_arn(bucket)
+    body = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    _s3_client.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=body,
+        ContentType="application/json",
+        ServerSideEncryption="aws:kms",
+        SSEKMSKeyId=kms_arn,
+    )
+
+def upload_file_secure(local_path: str, bucket: str, key: str) -> None:
+    """
+    Upload a local file with SSE-KMS enforced.
+    Works for large files via managed transfer.
+    """
+    kms_arn = resolve_bucket_kms_arn(bucket)
+    _s3_client.upload_file(
+        local_path,
+        bucket,
+        key,
+        ExtraArgs={
+            "ServerSideEncryption": "aws:kms",
+            "SSEKMSKeyId": kms_arn,
+        },
+    )
 # ---------------------------
 # Utilities
 # ---------------------------
@@ -205,31 +277,54 @@ class OutputSink:
 
 
 class S3Sink(OutputSink):
+    """
+    Writes scanner outputs to S3 with SSE-KMS enforced.
+    First run friendly. If the manifest key does not exist, reads return {} and writes create it.
+    Requires these helpers to be defined and imported:
+      resolve_bucket_kms_arn(bucket: str) -> str
+      put_json_secure(bucket: str, key: str, obj: dict) -> None
+      upload_file_secure(local_path: str, bucket: str, key: str) -> None  # not used here yet but available
+    """
+
     def __init__(self, s3_client, bucket: str):
         self.s3 = s3_client
         self.bucket = bucket
 
+        # Discover the bucket CMK once. Safe on first run. The helper caches per bucket.
+        self._kms_arn = resolve_bucket_kms_arn(self.bucket)
+
         timestamp = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+
         # Legacy outputs
         self.legacy_jsonl_key = f"{RESULTS_PREFIX}/objects_{timestamp}.jsonl"
         self.metadata_key = f"{METADATA_PREFIX}/object_metadata_{timestamp}.csv"
-        # New schema file (stable name and timestamped copy)
+
+        # New schema file names. A stable name and a timestamped copy.
         self.final_results_key = f"{RESULTS_PREFIX}/{FINAL_RESULTS_BASENAME}"
         self.final_results_key_ts = f"{RESULTS_PREFIX}/{timestamp}_{FINAL_RESULTS_BASENAME}"
 
     # --- new schema ---
     def write_results_tree(self, results_tree: dict):
-        body = json.dumps(results_tree, indent=2).encode("utf-8")
-        # Write stable name and timestamped name
-        self.s3.put_object(Bucket=self.bucket, Key=self.final_results_key, Body=body, ContentType="application/json")
-        self.s3.put_object(Bucket=self.bucket, Key=self.final_results_key_ts, Body=body, ContentType="application/json")
+        """
+        Write the new schema results in two locations.
+        Uses SSE-KMS discovered from the bucket. Works on first run.
+        """
+        put_json_secure(self.bucket, self.final_results_key, results_tree)
+        put_json_secure(self.bucket, self.final_results_key_ts, results_tree)
 
     # --- manifest ---
     def write_manifest(self, manifest: dict):
-        body = json.dumps(manifest, indent=2).encode("utf-8")
-        self.s3.put_object(Bucket=self.bucket, Key=MANIFEST_KEY, Body=body, ContentType="application/json")
+        """
+        Write or replace the manifest JSON.
+        Safe on first run. Creates the key if not present.
+        """
+        put_json_secure(self.bucket, MANIFEST_KEY, manifest)
 
     def read_manifest(self) -> dict:
+        """
+        Read the manifest JSON.
+        First run returns {} if the object is missing.
+        """
         try:
             resp = self.s3.get_object(Bucket=self.bucket, Key=MANIFEST_KEY)
             return json.loads(resp["Body"].read().decode("utf-8"))
@@ -243,6 +338,10 @@ class S3Sink(OutputSink):
     # --- legacy outputs (optional) ---
     @contextlib.contextmanager
     def open_legacy_results_files(self):
+        """
+        Buffer legacy outputs in memory. Upload at context exit if enabled.
+        On first run this simply creates the new keys.
+        """
         jsonl_buf = io.StringIO()
         csv_buf = io.StringIO()
         csv_writer = csv.DictWriter(csv_buf, fieldnames=[
@@ -252,10 +351,24 @@ class S3Sink(OutputSink):
         try:
             yield jsonl_buf, csv_writer
         finally:
-            # Upload only if asked to write legacy outputs
             if WRITE_LEGACY_OUTPUTS:
-                self.s3.put_object(Bucket=self.bucket, Key=self.legacy_jsonl_key, Body=jsonl_buf.getvalue().encode("utf-8"), ContentType="application/jsonl")
-                self.s3.put_object(Bucket=self.bucket, Key=self.metadata_key, Body=csv_buf.getvalue().encode("utf-8"), ContentType="text/csv")
+                # These are raw text payloads. Use the client with explicit SSE-KMS headers.
+                self.s3.put_object(
+                    Bucket=self.bucket,
+                    Key=self.legacy_jsonl_key,
+                    Body=jsonl_buf.getvalue().encode("utf-8"),
+                    ContentType="application/jsonl",
+                    ServerSideEncryption="aws:kms",
+                    SSEKMSKeyId=self._kms_arn,
+                )
+                self.s3.put_object(
+                    Bucket=self.bucket,
+                    Key=self.metadata_key,
+                    Body=csv_buf.getvalue().encode("utf-8"),
+                    ContentType="text/csv",
+                    ServerSideEncryption="aws:kms",
+                    SSEKMSKeyId=self._kms_arn,
+                )
 
     def target_str(self) -> str:
         return f"s3://{self.bucket}/{RESULTS_PREFIX}"

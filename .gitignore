@@ -1,3 +1,10 @@
+#Project specific files
+**/tmp-unzip
+**/unzipped_files
+*.csv
+*.txt
+
+
 # =====================
 # Terraform
 # =====================

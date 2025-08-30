@@ -21,7 +21,7 @@ Limitations:
 """
 
 import boto3, re, json, sys, os
-
+from scanner import resolve_bucket_kms_arn, put_json_secure, upload_file_secure
 # -------------------------
 # 1. Configuration
 # -------------------------
@@ -30,7 +30,28 @@ import boto3, re, json, sys, os
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
 # -------------------------
-# 2. Helpers
+# 2. Secure S3 Helpers
+# Due to use of SSE-KMS enforcement on PUTS these helpers are necessary
+# They are meant to allow discovery of the CMK from the bucket securely
+# We don't hardcode a key, allowing unilateral rotation of CMK's and updates of bucket encryption
+# -------------------------
+
+s3_ = boto3.client("s3")
+
+def put_text_secure(bucket: str, key: str, text: str) -> None:
+    kms_arn = resolve_bucket_kms_arn(bucket)
+    s3_.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=text.encode("utf-8"),
+        ContentType="text/plain; charset=utf-8",
+        ServerSideEncryption="aws:kms",
+        SSEKMSKeyId=kms_arn,
+    )
+
+
+# -------------------------
+# 3. Helpers
 # -------------------------
 
 def extract_emails_from_bytes(data: bytes):
@@ -69,7 +90,7 @@ def scan_object(s3, bucket, key):
 
 
 # -------------------------
-# 3. Main
+# 4. Main
 # -------------------------
 
 def main():
