@@ -48,3 +48,10 @@ variable "tags" {
   description = "Optional tags to apply"
   default     = {}
 }
+
+# Optional. OpenSSH public key text. Leave empty to skip creating a key pair.
+variable "public_key" {
+  type        = string
+  default     = ""
+  description = "OpenSSH public key to upload as an AWS key pair for instances. Leave empty to skip."
+}

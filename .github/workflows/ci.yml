@@ -15,6 +15,8 @@ env:
   AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
   # Change the Terraform version if you need to
   TERRAFORM_VERSION: 1.9.5
+  TF_VAR_public_key: ${{ secrets.SSH_PUBLIC_KEY || '' }}
+
 
 jobs:
   terraform_plan:

@@ -3,6 +3,7 @@ data "tls_certificate" "github_oidc" {
   url = "https://token.actions.githubusercontent.com"
 }
 
+
 # Create the AWS OIDC provider that trusts GitHub
 resource "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
@@ -117,3 +118,4 @@ resource "aws_iam_role_policy_attachment" "example" {
   role       = aws_iam_role.gha.name
   policy_arn = aws_iam_policy.example[0].arn
 }
+

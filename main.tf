@@ -70,8 +70,6 @@ resource "aws_s3_object" "scanner_py" {
 
 }
 
-
-
 data "aws_iam_policy_document" "results_bucket_policy" {
   statement {
     sid     = "DenyInsecureTransport"
@@ -220,11 +218,16 @@ data "aws_vpc" "default" {
 }
 
 resource "aws_key_pair" "scanner_key" {
+  count      = local.create_scanner_key ? 1 : 0
   key_name   = "scanner-key"
-  public_key = file("~/.ssh/id_ed25519.pub")
+  public_key = var.public_key
+  tags = {
+    Project = "sentra-scanner-test"
+  }
 }
 
 locals {
+  create_scanner_key = var.public_key != ""
   user_data_scanner_python38 = <<EOF
 #!/bin/bash
 exec > >(tee -a /var/log/user-data.log) 2>&1
@@ -377,7 +380,7 @@ resource "aws_instance" "scanner_vm" {
   instance_type          = var.instance_type
   iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
   vpc_security_group_ids = [aws_security_group.scanner_sg.id]
-  key_name               = aws_key_pair.scanner_key.key_name
+  key_name               = local.create_scanner_key ? aws_key_pair.scanner_key[0].key_name : null
 
   user_data = local.user_data_scanner_python38
 
