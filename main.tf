@@ -227,7 +227,7 @@ resource "aws_key_pair" "scanner_key" {
 }
 
 locals {
-  create_scanner_key = var.public_key != ""
+  create_scanner_key         = var.public_key != ""
   user_data_scanner_python38 = <<EOF
 #!/bin/bash
 exec > >(tee -a /var/log/user-data.log) 2>&1
