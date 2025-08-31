@@ -4,7 +4,7 @@ terraform {
 
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
+      source = "hashicorp/aws"
       # Use a caret or pessimistic range for stability with updates.
       version = "~> 5.0"
     }
@@ -17,7 +17,7 @@ terraform {
       version = "~> 2.3"
     }
     template = {
-      source  = "hashicorp/template"
+      source = "hashicorp/template"
       # 2.2.0 is the latest and effectively frozen. Keep it pinned.
       version = "~> 2.2"
     }

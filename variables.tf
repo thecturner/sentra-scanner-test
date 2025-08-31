@@ -19,7 +19,7 @@ variable "instance_type" {
 variable "results_bucket_name" {
   type        = string
   description = "S3 bucket for scanner results"
-  default = "sentra-results-bucket-ct-us-east1-20250822"
+  default     = "sentra-results-bucket-ct-us-east1-20250822"
 }
 
 # ---------------------------------------------------------------------------
@@ -33,7 +33,7 @@ variable "results_bucket_name" {
 # Use "1" if you want to quickly verify parsing and logs on the instance itself.
 variable "scanner_dev_mode" {
   type        = string
-  default     = "0"  # "1" to write locally
+  default     = "0" # "1" to write locally
   description = "Toggle local dev output. '1' writes results to scanner_out_dir for easy debugging. '0' keeps outputs strictly in the normal pipeline so S3 stays the source of truth."
 }
 
@@ -97,6 +97,6 @@ variable "scanner_total_archive_read_budget" {
 # Set to "0" to reduce duplication and storage.
 variable "scanner_write_legacy_outputs" {
   type        = string
-  default     = "1"  # "0" disables legacy JSONL/CSV
+  default     = "1" # "0" disables legacy JSONL/CSV
   description = "Emit legacy JSONL/CSV outputs for compatibility. '1' enables legacy files in addition to current outputs. '0' disables them to save space and simplify pipelines."
 }

@@ -18,7 +18,7 @@ resource "aws_kms_key" "results_cmk" {
 }
 
 resource "aws_s3_bucket" "results" {
-  bucket = var.results_bucket_name
+  bucket        = var.results_bucket_name
   force_destroy = true
 }
 
@@ -30,7 +30,7 @@ resource "aws_s3_bucket_public_access_block" "results_pab" {
   block_public_policy     = true
   restrict_public_buckets = true
 
-    depends_on = [aws_s3_bucket.results]
+  depends_on = [aws_s3_bucket.results]
 }
 
 # Default server-side encryption for all new objects.
@@ -45,7 +45,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "results_sse" {
     bucket_key_enabled = true
   }
 
-    depends_on = [aws_kms_key.results_cmk]
+  depends_on = [aws_kms_key.results_cmk]
 }
 
 resource "aws_s3_bucket_versioning" "results_ver" {
@@ -66,7 +66,7 @@ resource "aws_s3_object" "scanner_py" {
   server_side_encryption = "aws:kms"
   kms_key_id             = aws_kms_key.results_cmk.arn
 
-    depends_on = [aws_s3_bucket.results]
+  depends_on = [aws_s3_bucket.results]
 
 }
 
@@ -78,7 +78,7 @@ data "aws_iam_policy_document" "results_bucket_policy" {
     effect  = "Deny"
     actions = ["s3:*"]
     principals {
-      type = "*"
+      type        = "*"
       identifiers = ["*"]
     }
     resources = [
@@ -97,7 +97,7 @@ data "aws_iam_policy_document" "results_bucket_policy" {
     effect  = "Deny"
     actions = ["s3:PutObject"]
     principals {
-      type = "*"
+      type        = "*"
       identifiers = ["*"]
     }
     resources = ["${aws_s3_bucket.results.arn}/*"]
@@ -119,7 +119,7 @@ resource "aws_s3_bucket_policy" "results_policy" {
   bucket = aws_s3_bucket.results.id
   policy = data.aws_iam_policy_document.results_bucket_policy.json
 
-    depends_on = [aws_kms_key.results_cmk]
+  depends_on = [aws_kms_key.results_cmk]
 }
 
 # Build a least-privilege policy for using the results CMK
@@ -192,7 +192,7 @@ data "external" "my_ip" {
 resource "aws_security_group" "scanner_sg" {
   name        = "scanner-security-group"
   description = "Allow SSH access from my IP"
-  vpc_id      = data.aws_vpc.default.id  # Replace with actual VPC if needed
+  vpc_id      = data.aws_vpc.default.id # Replace with actual VPC if needed
 
   ingress {
     description = "SSH"
@@ -377,22 +377,22 @@ resource "aws_instance" "scanner_vm" {
   instance_type          = var.instance_type
   iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
   vpc_security_group_ids = [aws_security_group.scanner_sg.id]
-  key_name = aws_key_pair.scanner_key.key_name
+  key_name               = aws_key_pair.scanner_key.key_name
 
-  user_data              = local.user_data_scanner_python38
+  user_data = local.user_data_scanner_python38
 
   metadata_options {
-    http_endpoint               = "enabled"   # keep IMDS (instance metedata service) reachable on the instance
-    http_tokens                 = "required"  # force IMDSv2. block IMDSv1 making blind Server-Side Request Forgery harder
-    http_put_response_hop_limit = 2           # typical default. limits token reuse via proxies
+    http_endpoint               = "enabled"  # keep IMDS (instance metedata service) reachable on the instance
+    http_tokens                 = "required" # force IMDSv2. block IMDSv1 making blind Server-Side Request Forgery harder
+    http_put_response_hop_limit = 2          # typical default. limits token reuse via proxies
   }
 
   root_block_device {
-  encrypted   = true
-  # Using the S3 CMK we create. Otherwise omit kms_key_id to use default EBS CMK.
-  kms_key_id  = aws_kms_key.results_cmk.arn
-  volume_type = "gp3"
-  volume_size = 20
+    encrypted = true
+    # Using the S3 CMK we create. Otherwise omit kms_key_id to use default EBS CMK.
+    kms_key_id  = aws_kms_key.results_cmk.arn
+    volume_type = "gp3"
+    volume_size = 20
   }
 
 
@@ -431,7 +431,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "results_logs_sse"
     bucket_key_enabled = true
   }
 
-    depends_on = [aws_kms_key.results_cmk]
+  depends_on = [aws_kms_key.results_cmk]
 }
 
 resource "aws_s3_bucket_versioning" "results_logs_ver" {
