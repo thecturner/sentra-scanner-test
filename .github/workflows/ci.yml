@@ -20,13 +20,22 @@ jobs:
   terraform_plan:
     name: Terraform fmt validate plan
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('**/*.tf') != '' }}
 
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
 
+      - name: Detect Terraform files
+        id: detect_tf
+        run: |
+          if git ls-files "*.tf" | grep -q . ; then
+            echo "has_tf=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_tf=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install tools needed by your helper script
+        if: steps.detect_tf.outputs.has_tf == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y jq
@@ -36,6 +45,7 @@ jobs:
       # Create role and trust for GitHub before using this.
       # Docs: aws-actions/configure-aws-credentials
       - name: Configure AWS credentials via OIDC
+        if: steps.detect_tf.outputs.has_tf == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
@@ -52,29 +62,35 @@ jobs:
       #     aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
+        if: steps.detect_tf.outputs.has_tf == 'true'
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
       # Keep your HCL tidy
       - name: terraform fmt check
+        if: steps.detect_tf.outputs.has_tf == 'true'
         run: terraform fmt -check -recursive
 
       # Init without interactive prompts
       - name: terraform init
+        if: steps.detect_tf.outputs.has_tf == 'true'
         run: terraform init -input=false
 
       # Validate syntax and provider wiring
       - name: terraform validate
+        if: steps.detect_tf.outputs.has_tf == 'true'
         run: terraform validate -no-color
 
       # Plan. If your code requires TF_VAR_* values, add them in repo secrets
       # then they will be available here automatically as environment variables.
       - name: terraform plan
+        if: steps.detect_tf.outputs.has_tf == 'true'
         run: terraform plan -input=false -no-color -out=tfplan
 
       # Save the plan file and logs for review in PRs
       - name: Upload plan artifact
+        if: steps.detect_tf.outputs.has_tf == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: terraform-plan
@@ -116,5 +132,9 @@ jobs:
 
       # Optional. Validate docker-compose file if present.
       - name: Validate docker-compose.yml
-        if: ${{ hashFiles('docker-compose.yml') != '' }}
-        run: docker compose config
+        run: |
+          if [ -f docker-compose.yml ]; then
+            docker compose config
+          else
+            echo "No docker-compose.yml. Skipping validation."
+          fi
