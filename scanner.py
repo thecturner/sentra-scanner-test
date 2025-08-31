@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple, Set
 
 import boto3
-from botocore.exceptions import ClientError, NoCredentialsError, EndpointConnectionError, BotoCoreError
+from botocore.exceptions import ClientError, NoCredentialsError
 
 # ---------------------------
 # Defaults and configuration
@@ -155,7 +155,7 @@ def upload_file_secure(local_path: str, bucket: str, key: str) -> None:
 # ---------------------------
 
 def utcnow_iso():
-    return dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc).isoformat()
+    return dt.datetime.now(dt.timezone.utc).isoformat()
 
 def sha256_of_bytes(b: bytes) -> str:
     import hashlib
@@ -293,7 +293,7 @@ class S3Sink(OutputSink):
         # Discover the bucket CMK once. Safe on first run. The helper caches per bucket.
         self._kms_arn = resolve_bucket_kms_arn(self.bucket)
 
-        timestamp = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
         # Legacy outputs
         self.legacy_jsonl_key = f"{RESULTS_PREFIX}/objects_{timestamp}.jsonl"
@@ -378,7 +378,7 @@ class LocalSink(OutputSink):
     def __init__(self, out_dir: Path):
         self.out_dir = out_dir
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         # Legacy outputs
         self.legacy_jsonl_path = self.out_dir / f"objects_{timestamp}.jsonl"
         self.metadata_path = self.out_dir / f"object_metadata_{timestamp}.csv"
@@ -490,7 +490,10 @@ class S3Scanner:
 
     # ----- helpers -----
 
-    def _priority_tag(self, key: str) -> str:
+    @staticmethod
+
+
+    def _priority_tag(key: str) -> str:
         ext = ext_of_key(key)
         if ext in DATA_EXTENSIONS:
             return "data"
