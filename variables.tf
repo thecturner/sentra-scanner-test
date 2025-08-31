@@ -4,6 +4,13 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+# Optional. OpenSSH public key text. Leave empty to skip creating a key pair.
+variable "public_key" {
+  type        = string
+  default     = ""
+  description = "OpenSSH public key to upload as an AWS key pair for instances. Leave empty to skip."
+}
+
 variable "ami_id" {
   type        = string
   description = "AMI to use for the instance"
@@ -100,3 +107,4 @@ variable "scanner_write_legacy_outputs" {
   default     = "1" # "0" disables legacy JSONL/CSV
   description = "Emit legacy JSONL/CSV outputs for compatibility. '1' enables legacy files in addition to current outputs. '0' disables them to save space and simplify pipelines."
 }
+
