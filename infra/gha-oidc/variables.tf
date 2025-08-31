@@ -48,3 +48,9 @@ variable "tags" {
   description = "Optional tags to apply"
   default     = {}
 }
+
+variable "gha_oidc_role_name" {
+  type        = string
+  description = "Name of the GitHub OIDC execution role used by Terraform"
+  default     = "gha-oidc-sentra-scanner"
+}

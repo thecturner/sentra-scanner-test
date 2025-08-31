@@ -25,6 +25,43 @@ locals {
   ]
 }
 
+# Look up the preexisting OIDC execution role by name
+data "aws_iam_role" "gha_oidc" {
+  name = var.gha_oidc_role_name
+}
+
+# Managed policy that grants EC2 read calls needed at plan time
+resource "aws_iam_policy" "read_ec2_for_plan" {
+  name        = "gha-oidc-read-ec2-for-plan"
+  description = "Describe* permissions so Terraform can read VPC and subnets during plan"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid    = "TerraformReadEc2ForPlan",
+        Effect = "Allow",
+        Action = [
+          "ec2:DescribeVpcs",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeRouteTables",
+          "ec2:DescribeInternetGateways",
+          "ec2:DescribeNatGateways",
+          "ec2:DescribeSecurityGroups"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# Attach Managed policy that grants EC2 read calls needed at plan time to the execution role
+resource "aws_iam_role_policy_attachment" "gha_oidc_attach_read_ec2" {
+  role       = data.aws_iam_role.gha_oidc.name
+  policy_arn = aws_iam_policy.read_ec2_for_plan.arn
+}
+
+
 # Policy allowing GitHub Actions role to use the results CMK for S3 I/O
 data "aws_iam_policy_document" "gha_kms_for_results" {
   statement {
