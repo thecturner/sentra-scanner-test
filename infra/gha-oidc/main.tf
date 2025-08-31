@@ -96,8 +96,8 @@ resource "aws_iam_role" "gha" {
 # Optional . attach a minimal example policy to the role
 data "aws_iam_policy_document" "example" {
   statement {
-    sid     = "ReadIdentityOnly"
-    effect  = "Allow"
+    sid    = "ReadIdentityOnly"
+    effect = "Allow"
     actions = [
       "sts:GetCallerIdentity"
     ]

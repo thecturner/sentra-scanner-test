@@ -1,7 +1,7 @@
 variable "aws_region" {
   type        = string
   description = "AWS region to operate in"
-  default = "us-east-1"
+  default     = "us-east-1"
 }
 
 variable "github_owner" {

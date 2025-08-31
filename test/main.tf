@@ -87,7 +87,7 @@ data "aws_iam_policy_document" "test_bucket_policy" {
     effect  = "Deny"
     actions = ["s3:*"]
     principals {
-      type = "*"
+      type        = "*"
       identifiers = ["*"]
     }
     resources = [
@@ -106,7 +106,7 @@ data "aws_iam_policy_document" "test_bucket_policy" {
     effect  = "Deny"
     actions = ["s3:PutObject"]
     principals {
-      type = "*"
+      type        = "*"
       identifiers = ["*"]
     }
     resources = ["${each.value.arn}/*"]
@@ -174,14 +174,14 @@ resource "aws_s3_bucket_logging" "test_logging" {
 resource "aws_s3_object" "zips" {
   for_each = local.zip_map
 
-  bucket = each.key
-  key    = each.value
-  source = "${path.module}/${each.value}"
-  etag   = filemd5("${path.module}/${each.value}")
+  bucket                 = each.key
+  key                    = each.value
+  source                 = "${path.module}/${each.value}"
+  etag                   = filemd5("${path.module}/${each.value}")
   server_side_encryption = "aws:kms"
   kms_key_id             = aws_kms_key.test_cmk.arn
 
-depends_on = [aws_s3_bucket.test_buckets]
+  depends_on = [aws_s3_bucket.test_buckets]
 }
 
 # Updated to use zsh script and read from output file
@@ -201,12 +201,12 @@ resource "aws_s3_object" "unzipped" {
     }
   }
 
-  bucket = each.value.bucket
-  key    = each.value.key
-  source = each.value.source
-  etag   = each.value.etag
+  bucket                 = each.value.bucket
+  key                    = each.value.key
+  source                 = each.value.source
+  etag                   = each.value.etag
   server_side_encryption = "aws:kms"
   kms_key_id             = aws_kms_key.test_cmk.arn
 
-depends_on = [aws_s3_bucket.test_buckets]
+  depends_on = [aws_s3_bucket.test_buckets]
 }
