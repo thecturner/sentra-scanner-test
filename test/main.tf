@@ -1,212 +1,116 @@
-provider "aws" {
-  region = "us-east-1"
+# Test buckets module - clean for_each and no cross-resource references
+# This file intentionally contains NO provider or variable blocks.
+# Expect variable `test_bucket_names` to be defined once in test/variables.tf.
+
+locals {
+  # Plan-time set used for for_each
+  test_bucket_set = toset(var.test_bucket_names)
 }
 
 # One CMK for all test buckets
-resource "aws_kms_key" "test_cmk" {
-  description         = "CMK for encrypting test S3 buckets"
-  enable_key_rotation = true
+resource "aws_kms_key" "test_buckets" {
+  description             = "KMS for test buckets"
+  enable_key_rotation     = true
+  deletion_window_in_days = 7
 }
 
-variable "bucket_names" {
-  default = [
-    "test-bucket-1-ct-us-east1-20250822",
-    "test-bucket-2-ct-us-east1-20250822",
-    "test-bucket-3-ct-us-east1-20250822"
-  ]
-}
-
-locals {
-  zip_map = {
-    "test-bucket-1-ct-us-east1-20250822" = "test-bucket-1-ct-us-east1-20250822.zip"
-    "test-bucket-2-ct-us-east1-20250822" = "test-bucket-2-ct-us-east1-20250822.zip"
-    "test-bucket-3-ct-us-east1-20250822" = "test-bucket-3-ct-us-east1-20250822.zip"
-  }
-}
-
+# Main buckets
 resource "aws_s3_bucket" "test_buckets" {
-  for_each      = toset(var.bucket_names)
+  for_each      = local.test_bucket_set
   bucket        = each.key
   force_destroy = true
-}
-
-# Public access block for every test bucket
-resource "aws_s3_bucket_public_access_block" "test_pab" {
-  for_each = aws_s3_bucket.test_buckets
-
-  bucket                  = each.value.id
-  block_public_acls       = true
-  ignore_public_acls      = true
-  block_public_policy     = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_public_access_block" "test_logs_pab" {
-  for_each = aws_s3_bucket.test_logs
-
-  bucket                  = each.value.id
-  block_public_acls       = true
-  ignore_public_acls      = true
-  block_public_policy     = true
-  restrict_public_buckets = true
-}
-
-# Default SSE for every test bucket using the CMK
-resource "aws_s3_bucket_server_side_encryption_configuration" "test_sse" {
-  for_each = aws_s3_bucket.test_buckets
-
-  bucket = each.value.id
-
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.test_cmk.arn
-    }
-    bucket_key_enabled = true
+  tags = {
+    Purpose = "test"
   }
-
-  depends_on = [aws_kms_key.test_cmk]
-
 }
 
-# Versioning on for every test bucket
-resource "aws_s3_bucket_versioning" "test_versioning" {
-  for_each = aws_s3_bucket.test_buckets
+# This bucket is already the target for access logs from the primary buckets.
+# We route its logs to a central sink in a later hardening step.
+# Logs buckets (derived name: <main>-logs)
+#tfsec:ignore:AVD-AWS-0089
+resource "aws_s3_bucket" "test_logs" {
+  for_each      = local.test_bucket_set
+  bucket        = "${each.key}-logs"
+  force_destroy = true
+  tags = {
+    Purpose = "test-logs"
+  }
+}
 
-  bucket = each.value.id
+# Public Access Block on main buckets
+resource "aws_s3_bucket_public_access_block" "test_buckets_pab" {
+  for_each = local.test_bucket_set
+  bucket   = aws_s3_bucket.test_buckets[each.key].id
+
+  block_public_acls       = true
+  ignore_public_acls      = true
+  block_public_policy     = true
+  restrict_public_buckets = true
+}
+
+# Public Access Block on logs buckets
+resource "aws_s3_bucket_public_access_block" "test_logs_pab" {
+  for_each = local.test_bucket_set
+  bucket   = aws_s3_bucket.test_logs[each.key].id
+
+  block_public_acls       = true
+  ignore_public_acls      = true
+  block_public_policy     = true
+  restrict_public_buckets = true
+}
+
+# Versioning on main buckets
+resource "aws_s3_bucket_versioning" "test_buckets_ver" {
+  for_each = local.test_bucket_set
+  bucket   = aws_s3_bucket.test_buckets[each.key].id
+
   versioning_configuration {
     status = "Enabled"
   }
 }
 
-data "aws_iam_policy_document" "test_bucket_policy" {
-  for_each = aws_s3_bucket.test_buckets
+# Versioning on logs buckets
+resource "aws_s3_bucket_versioning" "test_logs_ver" {
+  for_each = local.test_bucket_set
+  bucket   = aws_s3_bucket.test_logs[each.key].id
 
-  statement {
-    sid     = "DenyInsecureTransport"
-    effect  = "Deny"
-    actions = ["s3:*"]
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-    resources = [
-      each.value.arn,
-      "${each.value.arn}/*"
-    ]
-    condition {
-      test     = "Bool"
-      variable = "aws:SecureTransport"
-      values   = ["false"]
-    }
-  }
-
-  statement {
-    sid     = "DenyUnencryptedObjectUploads"
-    effect  = "Deny"
-    actions = ["s3:PutObject"]
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-    resources = ["${each.value.arn}/*"]
-
-    condition {
-      test     = "StringNotEquals"
-      variable = "s3:x-amz-server-side-encryption"
-      values   = ["aws:kms"]
-    }
-    condition {
-      test     = "StringNotEquals"
-      variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"
-      values   = [aws_kms_key.test_cmk.arn]
-    }
+  versioning_configuration {
+    status = "Enabled"
   }
 }
 
-resource "aws_s3_bucket_policy" "test_policy" {
-  for_each = aws_s3_bucket.test_buckets
-  bucket   = each.value.id
-  policy   = data.aws_iam_policy_document.test_bucket_policy[each.key].json
+# SSE-KMS on main buckets
+resource "aws_s3_bucket_server_side_encryption_configuration" "test_buckets_sse" {
+  for_each = local.test_bucket_set
+  bucket   = aws_s3_bucket.test_buckets[each.key].id
 
-  depends_on = [aws_kms_key.test_cmk]
-
-}
-
-# Per-bucket logs bucket. keeps names predictable.
-resource "aws_s3_bucket" "test_logs" {
-  for_each = aws_s3_bucket.test_buckets
-
-  bucket        = "${each.key}-logs"
-  force_destroy = true
-}
-
-
-
-# Enable ACLs for log-delivery-write by preferring bucket owner
-resource "aws_s3_bucket_ownership_controls" "test_logs_owner" {
-  for_each = aws_s3_bucket.test_logs
-
-  bucket = each.value.id
   rule {
-    object_ownership = "BucketOwnerPreferred"
+    bucket_key_enabled = true
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.test_buckets.arn
+    }
   }
 }
 
-resource "aws_s3_bucket_acl" "test_logs_acl" {
-  for_each = aws_s3_bucket.test_logs
-  bucket   = each.value.id
-  acl      = "log-delivery-write"
+# SSE-KMS on logs buckets
+resource "aws_s3_bucket_server_side_encryption_configuration" "test_logs_sse" {
+  for_each = local.test_bucket_set
+  bucket   = aws_s3_bucket.test_logs[each.key].id
 
-  depends_on = [aws_s3_bucket_ownership_controls.test_logs_owner]
-
+  rule {
+    bucket_key_enabled = true
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.test_buckets.arn
+    }
+  }
 }
 
-# Enable access logging to each test bucket's own logs bucket
-resource "aws_s3_bucket_logging" "test_logging" {
-  for_each = aws_s3_bucket.test_buckets
-
-  bucket        = each.value.id
+# Access logging from main buckets to their matching logs buckets
+resource "aws_s3_bucket_logging" "test_buckets_logging" {
+  for_each      = local.test_bucket_set
+  bucket        = aws_s3_bucket.test_buckets[each.key].id
   target_bucket = aws_s3_bucket.test_logs[each.key].id
   target_prefix = "s3-access/"
-}
-
-resource "aws_s3_object" "zips" {
-  for_each = local.zip_map
-
-  bucket                 = each.key
-  key                    = each.value
-  source                 = "${path.module}/${each.value}"
-  etag                   = filemd5("${path.module}/${each.value}")
-  server_side_encryption = "aws:kms"
-  kms_key_id             = aws_kms_key.test_cmk.arn
-
-  depends_on = [aws_s3_bucket.test_buckets]
-}
-
-# Updated to use zsh script and read from output file
-data "external" "unzipped_files" {
-  program = ["zsh", "${abspath(path.module)}/unzip_and_list.zsh"]
-}
-
-
-resource "aws_s3_object" "unzipped" {
-  for_each = {
-    for full_key, file_info in data.external.unzipped_files.result :
-    full_key => {
-      bucket = split("/", full_key)[0]
-      key    = split("/", full_key)[1]
-      source = file_info
-      etag   = filemd5(file_info)
-    }
-  }
-
-  bucket                 = each.value.bucket
-  key                    = each.value.key
-  source                 = each.value.source
-  etag                   = each.value.etag
-  server_side_encryption = "aws:kms"
-  kms_key_id             = aws_kms_key.test_cmk.arn
-
-  depends_on = [aws_s3_bucket.test_buckets]
 }

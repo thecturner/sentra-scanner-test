@@ -19,10 +19,68 @@ resource "aws_iam_openid_connect_provider" "github" {
 
 # Build allowed subject claims for the branches
 locals {
+  use_inline_kms = var.results_kms_arn == "" && var.create_results_kms
   gha_subs = [
     for b in var.allowed_branches :
     "repo:${var.github_owner}/${var.github_repo}:ref:refs/heads/${b}"
   ]
+}
+
+resource "aws_kms_key" "results" {
+  count                   = local.use_inline_kms ? 1 : 0
+  description             = "Bootstrap CMK for results (gha-oidc)"
+  enable_key_rotation     = true
+  deletion_window_in_days = 7
+}
+
+resource "aws_kms_alias" "results" {
+  count         = local.use_inline_kms ? 1 : 0
+  name          = "alias/sentra-results-dev"
+  target_key_id = aws_kms_key.results[0].key_id
+}
+
+# Single source of truth for the ARN we will authorize
+locals {
+  effective_results_kms_arn = (
+    var.results_kms_arn != "" ? var.results_kms_arn :
+    (local.use_inline_kms ? aws_kms_key.results[0].arn : "")
+  )
+  want_results_kms = var.create_results_kms || var.results_kms_arn != ""
+}
+
+data "aws_iam_policy_document" "kms_for_results" {
+  count = local.want_results_kms ? 1 : 0
+
+  statement {
+    sid    = "AllowUseOfResultsCmkForS3"
+    effect = "Allow"
+    actions = [
+      "kms:Decrypt",
+      "kms:DescribeKey",
+      "kms:Encrypt",
+      "kms:GenerateDataKey*",
+    ]
+    resources = [local.effective_results_kms_arn]
+  }
+}
+
+resource "aws_iam_policy" "kms_for_results" {
+  count       = local.want_results_kms ? 1 : 0
+  name        = "kms-for-results-cmk"
+  description = "Use results CMK for S3 object encryption and decryption"
+  policy      = data.aws_iam_policy_document.kms_for_results[0].json
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_results_kms" {
+  count      = local.want_results_kms ? 1 : 0
+  role       = var.gha_oidc_role_name # or your OIDC role lookup
+  policy_arn = aws_iam_policy.kms_for_results[0].arn
+}
+
+# Optional. export the ARN so the root stack can adopt it later
+output "bootstrap_results_kms_arn" {
+  value       = local.use_inline_kms ? aws_kms_key.results[0].arn : null
+  description = "Bootstrap CMK ARN created by gha-oidc when create_results_kms = true"
 }
 
 # Look up the preexisting OIDC execution role by name

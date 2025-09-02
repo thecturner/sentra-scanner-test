@@ -39,8 +39,15 @@ variable "attach_example_permissions" {
 }
 
 variable "results_kms_arn" {
-  description = "ARN of the CMK used by the results bucket for SSE-KMS"
   type        = string
+  default     = ""
+  description = "Existing results CMK ARN. If empty and create_results_kms is true, we will create one."
+}
+
+variable "create_results_kms" {
+  type        = bool
+  default     = true
+  description = "If true and results_kms_arn is empty, create a bootstrap CMK for dev."
 }
 
 variable "tags" {

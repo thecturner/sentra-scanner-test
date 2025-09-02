@@ -4,6 +4,17 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+
+variable "results_kms_arn" {
+  type        = string
+  default     = ""
+  description = "Existing results CMK ARN. Leave empty if none."
+}
+variable "create_results_kms" {
+  type        = bool
+  default     = false
+  description = "If true and results_kms_arn is empty, create a bootstrap CMK."
+}
 # Optional. OpenSSH public key text. Leave empty to skip creating a key pair.
 variable "public_key" {
   type        = string

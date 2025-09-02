@@ -11,6 +11,7 @@
 
 # Local .terraform directories
 **/.terraform/*
+.terraform/
 
 # .tfstate files
 *.tfstate
@@ -228,3 +229,7 @@ $RECYCLE.BIN/
 
 # Output folder
 /scanner_out/*
+
+# Scanner artifacts
+scanner_out/
+*.jsonl

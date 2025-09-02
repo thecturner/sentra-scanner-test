@@ -1,6 +1,14 @@
 
-provider "aws" {
-  region = "us-east-1"
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+
+module "test_buckets" {
+  source = "./test"
+  test_bucket_names = [
+    "test-bucket-1-ct-us-east1-20250822",
+    "test-bucket-2-ct-us-east1-20250822",
+    "test-bucket-3-ct-us-east1-20250822"
+  ] # or pass via TF_VAR_test_bucket_names
 }
 
 #data "template_file" "user_data" {
@@ -12,9 +20,12 @@ provider "aws" {
 #}
 # KMS key to encrypt objects in the results bucket.
 resource "aws_kms_key" "results_cmk" {
-  description             = "CMK for encrypting S3 results bucket objects"
-  enable_key_rotation     = true
-  deletion_window_in_days = 30
+  count                    = var.create_results_kms ? 1 : 0
+  description              = "CMK for encrypting S3 results bucket objects"
+  enable_key_rotation      = true
+  deletion_window_in_days  = 30
+  key_usage                = "ENCRYPT_DECRYPT"
+  customer_master_key_spec = "SYMMETRIC_DEFAULT"
 }
 
 resource "aws_s3_bucket" "results" {
@@ -40,7 +51,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "results_sse" {
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.results_cmk.arn
+      kms_master_key_id = local.effective_results_kms_arn
     }
     bucket_key_enabled = true
   }
@@ -64,7 +75,7 @@ resource "aws_s3_object" "scanner_py" {
   content_type = "text/x-python"
 
   server_side_encryption = "aws:kms"
-  kms_key_id             = aws_kms_key.results_cmk.arn
+  kms_key_id             = local.effective_results_kms_arn
 
   depends_on = [aws_s3_bucket.results]
 
@@ -108,7 +119,7 @@ data "aws_iam_policy_document" "results_bucket_policy" {
     condition {
       test     = "StringNotEquals"
       variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"
-      values   = [aws_kms_key.results_cmk.arn]
+      values   = [local.effective_results_kms_arn]
     }
   }
 }
@@ -122,23 +133,27 @@ resource "aws_s3_bucket_policy" "results_policy" {
 
 # Build a least-privilege policy for using the results CMK
 data "aws_iam_policy_document" "kms_for_results" {
+  count = local.want_kms ? 1 : 0
+
   statement {
     sid    = "AllowUseOfResultsCmkForS3"
     effect = "Allow"
     actions = [
       "kms:Encrypt",
       "kms:Decrypt",
-      "kms:GenerateDataKey*",
+      "kms:GenerateDataKey",
+      "kms:GenerateDataKeyWithoutPlaintext",
       "kms:DescribeKey",
     ]
-    resources = [aws_kms_key.results_cmk.arn]
+    resources = [local.effective_results_kms_arn]
   }
 }
 
 resource "aws_iam_policy" "kms_for_results" {
+  count       = local.want_kms ? 1 : 0
   name        = "kms-for-results-cmk"
   description = "Use results CMK for S3 object encryption and decryption"
-  policy      = data.aws_iam_policy_document.kms_for_results.json
+  policy      = data.aws_iam_policy_document.kms_for_results[0].json
 }
 
 resource "null_resource" "scanner_file_hash" {
@@ -163,8 +178,9 @@ resource "aws_iam_role" "ec2_role" {
 
 # Attach to the EC2 role used by aws_iam_instance_profile.ec2_profile
 resource "aws_iam_role_policy_attachment" "ec2_results_kms" {
-  role       = aws_iam_role.ec2_role.name
-  policy_arn = aws_iam_policy.kms_for_results.arn
+  count      = local.want_kms ? 1 : 0
+  role       = "scanner-ec2-role" # or aws_iam_role.ec2_role.name if you created it in TF
+  policy_arn = aws_iam_policy.kms_for_results[0].arn
 }
 
 resource "aws_iam_policy" "scanner_policy" {
@@ -200,12 +216,15 @@ resource "aws_security_group" "scanner_sg" {
     cidr_blocks = [data.external.my_ip.result["cidr"]]
   }
 
+  # Reason. Scanner needs temporary outbound HTTPS for package bootstrap and S3 access.
+  # Proper hardening will replace this with VPC endpoints and prefix-listed egress.
+  # tfsec:ignore:AVD-AWS-0104
   egress {
-    description = "Allow HTTPS egress to the internet for updates and S3 over TLS"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+    description = "Temporary. Outbound HTTPS only. Replaced by VPC endpoints later."
   }
 
   tags = {
@@ -227,7 +246,19 @@ resource "aws_key_pair" "scanner_key" {
 }
 
 locals {
-  create_scanner_key         = var.public_key != ""
+  # Use external ARN if given. Else use the created key’s ARN.
+  effective_results_kms_arn = var.create_results_kms ? aws_kms_key.results_cmk[0].arn : var.results_kms_arn
+
+  # True only when we intend to create a bootstrap KMS key in this stack
+  use_inline_kms = var.results_kms_arn == "" && var.create_results_kms
+
+  # True when we will have some KMS key involved at all
+  # This depends only on variables, so it is plan-time known
+  want_kms           = var.results_kms_arn != "" || var.create_results_kms
+  create_scanner_key = var.public_key != ""
+}
+
+locals {
   user_data_scanner_python38 = <<EOF
 #!/bin/bash
 exec > >(tee -a /var/log/user-data.log) 2>&1
@@ -376,13 +407,14 @@ EOF
 #}
 
 resource "aws_instance" "scanner_vm" {
-  ami                    = var.ami_id
-  instance_type          = var.instance_type
-  iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
-  vpc_security_group_ids = [aws_security_group.scanner_sg.id]
-  key_name               = local.create_scanner_key ? aws_key_pair.scanner_key[0].key_name : null
+  ami                                  = var.ami_id
+  instance_type                        = var.instance_type
+  iam_instance_profile                 = aws_iam_instance_profile.ec2_profile.name
+  vpc_security_group_ids               = [aws_security_group.scanner_sg.id]
+  key_name                             = local.create_scanner_key ? aws_key_pair.scanner_key[0].key_name : null
+  user_data                            = local.user_data_scanner_python38
+  instance_initiated_shutdown_behavior = "terminate"
 
-  user_data = local.user_data_scanner_python38
 
   metadata_options {
     http_endpoint               = "enabled"  # keep IMDS (instance metedata service) reachable on the instance
@@ -393,12 +425,12 @@ resource "aws_instance" "scanner_vm" {
   root_block_device {
     encrypted = true
     # Using the S3 CMK we create. Otherwise omit kms_key_id to use default EBS CMK.
-    kms_key_id  = aws_kms_key.results_cmk.arn
-    volume_type = "gp3"
-    volume_size = 20
+    kms_key_id            = try(local.effective_results_kms_arn, null)
+    volume_type           = "gp3"
+    volume_size           = 20
+    delete_on_termination = true
+
   }
-
-
 
   tags = {
     Name = "scanner-vm"
@@ -429,7 +461,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "results_logs_sse"
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.results_cmk.arn
+      kms_master_key_id = local.effective_results_kms_arn
     }
     bucket_key_enabled = true
   }
@@ -459,3 +491,24 @@ resource "aws_s3_bucket_logging" "results_logging" {
   target_prefix = "s3-access/"
 }
 
+data "aws_iam_policy_document" "self_terminate_doc" {
+  statement {
+    sid     = "AllowTerminateTaggedInstancesOnly"
+    actions = ["ec2:TerminateInstances"]
+    resources = [
+      "arn:aws:ec2:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:instance/*"
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/AutoTerminate"
+      values   = ["true"]
+    }
+  }
+}
+
+resource "aws_iam_policy" "self_terminate" {
+  name        = "scanner-self-terminate"
+  description = "EC2 can terminate instances tagged AutoTerminate=true"
+  policy      = data.aws_iam_policy_document.self_terminate_doc.json
+}
