@@ -60,7 +60,12 @@ jobs:
           sudo mv terraform /usr/local/bin/terraform
           terraform -version
 
-      - name: Terraform validate
+      - name: Terraform init (read-only)
+        if: steps.has_tf.outputs.has_tf == 'true'
+        run: terraform -chdir=. init -backend=false -input=false
+
+      - name: Terraform validate (root)
+        if: steps.has_tf.outputs.has_tf == 'true'
         run: terraform -chdir=. validate -no-color
 
       - name: TFLint
