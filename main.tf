@@ -68,17 +68,18 @@ resource "aws_s3_bucket_versioning" "results_ver" {
 }
 
 resource "aws_s3_object" "scanner_py" {
-  bucket       = aws_s3_bucket.results.id
-  key          = "artifacts/scanner/scanner.py"
-  source       = "${path.module}/scanner.py"
-  etag         = filemd5("${path.module}/scanner.py")
-  content_type = "text/x-python"
+  bucket = aws_s3_bucket.results.id
+  key    = "artifacts/scanner/scanner.py"
+  source = "${path.module}/scanner.py"
 
+  # Use source_hash instead of etag when KMS is enabled
+  source_hash = filebase64sha256("${path.module}/scanner.py")
+
+  content_type           = "text/x-python"
   server_side_encryption = "aws:kms"
   kms_key_id             = local.effective_results_kms_arn
 
   depends_on = [aws_s3_bucket.results]
-
 }
 
 data "aws_iam_policy_document" "results_bucket_policy" {
