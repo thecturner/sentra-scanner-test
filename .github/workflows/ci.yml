@@ -68,8 +68,10 @@ jobs:
         if: steps.has_tf.outputs.has_tf == 'true'
         run: terraform -chdir=. validate -no-color
 
-      - name: TFLint
-        run: tflint .
+      - name: TFLint (init plugins + recursive scan)
+        run: |
+          tflint --init          # safe even if you have no plugins
+          tflint --recursive     # scan current repo (no positional ".")
 
       - name: Checkov
         run: checkov -d .
