@@ -35,8 +35,9 @@ jobs:
           pip install checkov yamllint bandit pip-audit ruff
           curl -sSL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
           curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
-          curl -fsSL https://github.com/tenable/terrascan/releases/latest/download/terrascan_Linux_x86_64.tar.gz | tar xz && sudo mv terrascan /usr/local/bin/
-
+          # Terrascan
+          curl -sSfL https://raw.githubusercontent.com/tenable/terrascan/master/scripts/install.sh \
+          | sudo bash -s -- -b /usr/local/bin v1.18.3
       - name: Terraform validate
         run: terraform -chdir=. validate -no-color
 
