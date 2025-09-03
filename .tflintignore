@@ -1,0 +1,4 @@
+# .tflintignore
+test/unzipped_files/**
+**/.terraform/**
+**/.terragrunt-cache/**
