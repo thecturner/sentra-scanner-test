@@ -251,7 +251,7 @@ locals {
   effective_results_kms_arn = var.create_results_kms ? aws_kms_key.results_cmk[0].arn : var.results_kms_arn
 
   # True only when we intend to create a bootstrap KMS key in this stack
-  use_inline_kms = var.results_kms_arn == "" && var.create_results_kms
+  #use_inline_kms = var.results_kms_arn == "" && var.create_results_kms
 
   # True when we will have some KMS key involved at all
   # This depends only on variables, so it is plan-time known
