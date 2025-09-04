@@ -1,29 +1,15 @@
-name: Bootstrap OIDC
-
-on:
-  push:
-    paths:
-      - 'infra/gha-oidc/**'
-      - '.github/workflows/bootstrap-oidc.yml'
-  workflow_dispatch: {}
-
-concurrency:
-  group: bootstrap-oidc
-  cancel-in-progress: false
-
 jobs:
   bootstrap_oidc:
     name: Create OIDC provider/role if missing, then disable this workflow
     runs-on: ubuntu-latest
 
-    # We need to disable this workflow via the API
+    # We need to disable this workflow via the API AND write secrets/variables
     permissions:
-      actions: write
+      actions: write     # <-- required to create/update secrets & variables
       contents: read
 
     env:
       AWS_REGION: us-east-1
-      # Hardcoded default role name. Set repo variable OIDC_ROLE_NAME to override if you want.
       OIDC_ROLE_NAME: ${{ vars.OIDC_ROLE_NAME || 'gha-oidc-sentra-scanner' }}
       WORKFLOW_FILE: bootstrap-oidc.yml
 
@@ -31,53 +17,7 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
-      - name: Guard. require temporary bootstrap secrets or exit quietly
-        id: guard
-        shell: bash
-        run: |
-          if [[ -z "${{ secrets.BOOTSTRAP_AWS_ACCESS_KEY_ID }}" || -z "${{ secrets.BOOTSTRAP_AWS_SECRET_ACCESS_KEY }}" ]]; then
-            echo "Bootstrap secrets are not set. Skipping bootstrap. This is expected after the first run."
-            echo "no_creds=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Configure AWS credentials (temp access key)
-        if: steps.guard.outputs.no_creds != 'true'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id:     ${{ secrets.BOOTSTRAP_AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.BOOTSTRAP_AWS_SECRET_ACCESS_KEY }}
-          aws-session-token:     ${{ secrets.BOOTSTRAP_AWS_SESSION_TOKEN }}
-          aws-region:            ${{ env.AWS_REGION }}
-
-      - name: Ensure AWS CLI present
-        if: steps.guard.outputs.no_creds != 'true'
-        run: aws --version || { sudo apt-get update && sudo apt-get install -y awscli; }
-
-      - name: Check for OIDC provider and role
-        if: steps.guard.outputs.no_creds != 'true'
-        id: check
-        shell: bash
-        run: |
-          set -euo pipefail
-          ROLE_NAME="${{ env.OIDC_ROLE_NAME }}"
-
-          # Check provider
-          if aws iam list-open-id-connect-providers --query 'OpenIDConnectProviderList[].Arn' --output text | grep -q 'token.actions.githubusercontent.com'; then
-            echo "provider_exists=true" >> "$GITHUB_OUTPUT"
-            echo "OIDC provider exists"
-          else
-            echo "provider_exists=false" >> "$GITHUB_OUTPUT"
-            echo "OIDC provider missing"
-          fi
-
-          # Check role
-          if aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
-            echo "role_exists=true" >> "$GITHUB_OUTPUT"
-            echo "OIDC role '$ROLE_NAME' exists"
-          else
-            echo "role_exists=false" >> "$GITHUB_OUTPUT"
-            echo "OIDC role '$ROLE_NAME' missing"
-          fi
+      # ... (your existing guard, configure-aws, ensure awscli, check steps) ...
 
       - name: Setup Terraform
         if: steps.guard.outputs.no_creds != 'true' && (steps.check.outputs.provider_exists != 'true' || steps.check.outputs.role_exists != 'true')
@@ -98,9 +38,44 @@ jobs:
             -var='create_results_kms=false' \
             -var='results_kms_arn=""'
 
-      # Disable this workflow if:
-      # - we detected both provider and role already existed, or
-      # - apply just ran successfully and created what's missing
+      # >>> NEW: discover the role ARN no matter if it existed or was just created
+      - name: Discover OIDC role ARN
+        if: steps.guard.outputs.no_creds != 'true'
+        id: discover_role
+        run: |
+          set -euo pipefail
+          ROLE="${{ env.OIDC_ROLE_NAME }}"
+          ARN=$(aws iam get-role --role-name "$ROLE" --query 'Role.Arn' --output text)
+          echo "role_arn=$ARN" >> "$GITHUB_OUTPUT"
+          echo "Discovered role ARN: $ARN"
+
+      # >>> NEW: store ARN as a repo secret and a repo variable
+      - name: Save AWS_ROLE_ARN as repo secret and variable
+        if: steps.guard.outputs.no_creds != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ROLE_ARN: ${{ steps.discover_role.outputs.role_arn }}
+        run: |
+          set -euo pipefail
+          # Secret (masked in logs, good for compatibility with existing ci.yml)
+          gh secret set AWS_ROLE_ARN --repo "${{ github.repository }}" --body "$ROLE_ARN"
+          echo "Repo secret AWS_ROLE_ARN updated."
+
+          # Variable (not secret; convenient for PRs and readability)
+          # Create or update using REST (gh has no 'gh variable set' built-in yet on all runners)
+          gh api \
+            --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/actions/variables/AWS_ROLE_ARN" \
+            -f name="AWS_ROLE_ARN" -f value="$ROLE_ARN" \
+          || gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/actions/variables" \
+            -f name="AWS_ROLE_ARN" -f value="$ROLE_ARN"
+          echo "Repo variable AWS_ROLE_ARN set."
+
+      # (keep your existing "Disable this workflow" step after these)
       - name: Disable this workflow
         if: steps.guard.outputs.no_creds != 'true' && (
               (steps.check.outputs.provider_exists == 'true' && steps.check.outputs.role_exists == 'true') ||
@@ -112,7 +87,7 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const workflow_id = process.env.WORKFLOW_FILE; // file name works here
+            const workflow_id = process.env.WORKFLOW_FILE;
             core.info(`Disabling workflow ${workflow_id} for ${owner}/${repo}...`);
             try {
               await github.rest.actions.disableWorkflow({ owner, repo, workflow_id });
