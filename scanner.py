@@ -40,6 +40,7 @@ import datetime as dt
 import io
 import json
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -195,8 +196,6 @@ def unique_preserving_order(seq: Iterable[str]) -> List[str]:
 # ---------------------------
 # Pattern finding
 # ---------------------------
-
-import re
 
 EMAIL_RE = re.compile(rb"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 AWS_KEY_RE = re.compile(rb"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")
