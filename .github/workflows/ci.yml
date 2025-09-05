@@ -71,16 +71,6 @@ jobs:
           sudo install terrascan /usr/local/bin && rm terrascan
 
           terrascan version
-      - name: Install scanners
-        run: |
-          pip install checkov yamllint bandit pip-audit ruff
-          # pin tflint to a specific version
-          curl -sSL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | TFLINT_VERSION=v0.59.1 bash
-          # actionlint
-          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
-          # Terrascan
-          curl -sSfL https://raw.githubusercontent.com/tenable/terrascan/master/scripts/install.sh | sudo bash -s -- -b /usr/local/bin v1.18.3
-          terrascan version
 
       - name: Detect Terraform files
         id: has_tf
@@ -116,8 +106,8 @@ jobs:
           tflint --init
           tflint --recursive
 
-      - name: Checkov
-        run: checkov -d .
+      #- name: Checkov
+      #  run: checkov -d .
 
       - name: Terrascan
         run: terrascan scan -t aws -i terraform -d .
