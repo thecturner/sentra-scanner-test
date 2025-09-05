@@ -53,34 +53,23 @@ jobs:
           curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
           ./actionlint -version
 
-          # Terrascan (robust install)
-          TERRASCAN_VERSION="${TERRASCAN_VERSION:-}"  # optionally set in job env, e.g. v1.19.0
-          OS=$(uname -s)
-          ARCH=$(uname -m)
-          case "$OS" in
-            Linux)  os_tag="Linux" ;;
-            Darwin) os_tag="Darwin" ;;
-            *) echo "Unsupported OS: $OS" >&2; exit 1 ;;
-          esac
+          # Terrascan (install from latest GitHub release)
+          set -euo pipefail
+          OS="$(uname -s)"                             # Linux on ubuntu-latest
+          ARCH="$(uname -m)"                           # x86_64 or aarch64
           case "$ARCH" in
-            x86_64|amd64) arch_tag="x86_64" ;;
-            aarch64|arm64) arch_tag="arm64" ;;
-            *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;;
+            x86_64|amd64) ARCH="x86_64" ;;
+            aarch64|arm64) ARCH="arm64" ;;
+            *) echo "Unsupported arch: $ARCH"; exit 1 ;;
           esac
 
-          asset="terrascan_${os_tag}_${arch_tag}.tar.gz"
-          if [ -n "$TERRASCAN_VERSION" ]; then
-            url="https://github.com/tenable/terrascan/releases/download/${TERRASCAN_VERSION}/${asset}"
-          else
-            url="https://github.com/tenable/terrascan/releases/latest/download/${asset}"
-          fi
+          ASSET_URL="$(curl -s https://api.github.com/repos/tenable/terrascan/releases/latest \
+            | grep -o -E "https://.+?_${OS}_${ARCH}\.tar\.gz" | head -n1)"
 
-          echo "Installing Terrascan from: $url"
-          curl -fsSL "$url" | tar xz
-          sudo mv terrascan /usr/local/bin/terrascan
+          curl -L "$ASSET_URL" -o terrascan.tar.gz
+          tar -xf terrascan.tar.gz terrascan && rm terrascan.tar.gz
+          sudo install terrascan /usr/local/bin && rm terrascan
 
-          # Sanity checks
-          command -v terrascan
           terrascan version
       - name: Install scanners
         run: |
