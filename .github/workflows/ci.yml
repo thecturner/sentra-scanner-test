@@ -46,8 +46,7 @@ jobs:
           # actionlint
           curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
           # Terrascan
-          curl -sSfL https://raw.githubusercontent.com/tenable/terrascan/master/scripts/install.sh \
-            | sudo bash -s -- -b /usr/local/bin v1.18.3
+          #curl -sSfL https://raw.githubusercontent.com/tenable/terrascan/master/scripts/install.sh | sudo bash -s -- -b /usr/local/bin v1.18.3
           terrascan version
 
       - name: Detect Terraform files
