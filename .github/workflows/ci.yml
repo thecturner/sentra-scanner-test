@@ -40,6 +40,50 @@ jobs:
 
       - name: Install scanners
         run: |
+          set -euo pipefail
+
+          # Python tools
+          pip install checkov yamllint bandit pip-audit ruff
+
+          # TFLint (pin)
+          curl -sSL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh \
+            | TFLINT_VERSION=v0.59.1 bash
+
+          # actionlint (latest release binary)
+          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
+          ./actionlint -version
+
+          # Terrascan (robust install)
+          TERRASCAN_VERSION="${TERRASCAN_VERSION:-}"  # optionally set in job env, e.g. v1.19.0
+          OS=$(uname -s)
+          ARCH=$(uname -m)
+          case "$OS" in
+            Linux)  os_tag="Linux" ;;
+            Darwin) os_tag="Darwin" ;;
+            *) echo "Unsupported OS: $OS" >&2; exit 1 ;;
+          esac
+          case "$ARCH" in
+            x86_64|amd64) arch_tag="x86_64" ;;
+            aarch64|arm64) arch_tag="arm64" ;;
+            *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;;
+          esac
+
+          asset="terrascan_${os_tag}_${arch_tag}.tar.gz"
+          if [ -n "$TERRASCAN_VERSION" ]; then
+            url="https://github.com/tenable/terrascan/releases/download/${TERRASCAN_VERSION}/${asset}"
+          else
+            url="https://github.com/tenable/terrascan/releases/latest/download/${asset}"
+          fi
+
+          echo "Installing Terrascan from: $url"
+          curl -fsSL "$url" | tar xz
+          sudo mv terrascan /usr/local/bin/terrascan
+
+          # Sanity checks
+          command -v terrascan
+          terrascan version
+      - name: Install scanners
+        run: |
           pip install checkov yamllint bandit pip-audit ruff
           # pin tflint to a specific version
           curl -sSL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | TFLINT_VERSION=v0.59.1 bash
