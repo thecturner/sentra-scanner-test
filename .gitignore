@@ -1,8 +1,9 @@
 #Project specific files
 **/tmp-unzip
-**/unzipped_files
-*.csv
-*.txt
+# Always keep this directory and everything beneath it
+!/test/unzipped_files/
+!/test/unzipped_files/**
+
 
 
 # =====================

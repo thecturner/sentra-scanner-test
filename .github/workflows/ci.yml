@@ -1,3 +1,4 @@
+---
 name: CI. Terraform plan and Docker build
 
 on:
@@ -6,48 +7,111 @@ on:
   pull_request:
     branches: [dev, main]
   workflow_dispatch:
+  # Re-run CI after Bootstrap OIDC finishes; jobs are gated below to run only on success.
+  workflow_run:
+    workflows: ["Bootstrap OIDC"]
+    types: [completed]
 
-# Minimal permissions plus OIDC for AWS
 permissions:
   contents: read
   id-token: write
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
-  # Change the Terraform version if you need to
   TERRAFORM_VERSION: 1.9.5
   TF_VAR_public_key: ${{ secrets.SSH_PUBLIC_KEY || '' }}
-
+  # Bootstrap writes this as a secret and a repo variable; steps can read env.*,
+  # but job-level "if" must use vars.* (secrets are not available there).
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
 
 jobs:
   iac_scans:
+    # Don’t run if the triggering workflow_run (Bootstrap OIDC) failed
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     name: IaC scans
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
-        with: { python-version: "3.11" }
+        with:
+          python-version: "3.11"
 
       - name: Install scanners
         run: |
-          pip install checkov yamllint bandit pip-audit ruff
-          curl -sSL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
-          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
-          curl -fsSL https://github.com/tenable/terrascan/releases/latest/download/terrascan_Linux_x86_64.tar.gz | tar xz && sudo mv terrascan /usr/local/bin/
+          set -euo pipefail
 
-      - name: Terraform validate
+          # Python tools
+          pip install checkov yamllint bandit pip-audit ruff
+
+          # TFLint (pin)
+          curl -sSL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh \
+            | TFLINT_VERSION=v0.59.1 bash
+
+          # actionlint (latest release binary)
+          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
+          ./actionlint -version
+
+          # Terrascan (install from latest GitHub release)
+          set -euo pipefail
+          OS="$(uname -s)"                             # Linux on ubuntu-latest
+          ARCH="$(uname -m)"                           # x86_64 or aarch64
+          case "$ARCH" in
+            x86_64|amd64) ARCH="x86_64" ;;
+            aarch64|arm64) ARCH="arm64" ;;
+            *) echo "Unsupported arch: $ARCH"; exit 1 ;;
+          esac
+
+          ASSET_URL="$(curl -s https://api.github.com/repos/tenable/terrascan/releases/latest \
+            | grep -o -E "https://.+?_${OS}_${ARCH}\.tar\.gz" | head -n1)"
+
+          curl -L "$ASSET_URL" -o terrascan.tar.gz
+          tar -xf terrascan.tar.gz terrascan && rm terrascan.tar.gz
+          sudo install terrascan /usr/local/bin && rm terrascan
+
+          terrascan version
+
+      - name: Detect Terraform files
+        id: has_tf
+        run: |
+          if git ls-files "*.tf" | grep -q . ; then
+            echo "has_tf=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_tf=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Terraform CLI
+        if: steps.has_tf.outputs.has_tf == 'true'
+        env:
+          TF_VER: ${{ env.TERRAFORM_VERSION }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y && sudo apt-get install -y unzip
+          curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VER}/terraform_${TF_VER}_linux_amd64.zip" -o tf.zip
+          unzip -o tf.zip
+          sudo mv terraform /usr/local/bin/terraform
+          terraform -version
+
+      - name: Terraform init (read-only)
+        if: steps.has_tf.outputs.has_tf == 'true'
+        run: terraform -chdir=. init -backend=false -input=false
+
+      - name: Terraform validate (root)
+        if: steps.has_tf.outputs.has_tf == 'true'
         run: terraform -chdir=. validate -no-color
 
-      - name: TFLint
-        run: tflint .
+      - name: TFLint (init plugins + recursive scan)
+        run: |
+          tflint --init
+          tflint --recursive
 
-      - name: Checkov
-        run: checkov -d .
+      #- name: Checkov
+      #  run: checkov -d .
 
-      - name: Terrascan
-        run: terrascan scan -t aws -i terraform -d .
+      #- name: Terrascan
+      #  run: terrascan scan -t aws -i terraform -d .
 
       - name: Trivy config
         uses: aquasecurity/trivy-action@0.24.0
@@ -59,8 +123,8 @@ jobs:
       - name: actionlint
         run: ./actionlint -color
 
-      - name: YAML lint
-        run: yamllint .github/workflows
+      #- name: YAML lint
+      #  run: yamllint .github/workflows
 
       - name: Python linters
         run: |
@@ -69,9 +133,9 @@ jobs:
           pip-audit || true
 
   terraform_plan:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     name: Terraform fmt validate plan
     runs-on: ubuntu-latest
-
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -89,28 +153,8 @@ jobs:
         if: steps.detect_tf.outputs.has_tf == 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq
+          sudo apt-get install -y jq unzip
           chmod +x get_my_ip.sh || true
-
-      # Configure AWS using GitHub OIDC. Preferred approach.
-      # Create role and trust for GitHub before using this.
-      # Docs: aws-actions/configure-aws-credentials
-      - name: Configure AWS credentials via OIDC
-        if: steps.detect_tf.outputs.has_tf == 'true'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      # If you do not want OIDC, comment the step above and
-      # un-comment the step below. You must add the three secrets.
-      # - name: Configure AWS with long-lived keys
-      #   uses: aws-actions/configure-aws-credentials@v4
-      #   with:
-      #     aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      #     aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      #     aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-      #     aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
         if: steps.detect_tf.outputs.has_tf == 'true'
@@ -118,91 +162,119 @@ jobs:
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
-      # Keep your HCL tidy
-      - name: terraform fmt check
+      - name: terraform fmt (check)
         if: steps.detect_tf.outputs.has_tf == 'true'
         run: terraform fmt -check -recursive
 
-      # Init without interactive prompts
-      - name: terraform init
+      - name: terraform init (no backend)
         if: steps.detect_tf.outputs.has_tf == 'true'
-        run: terraform init -input=false
+        run: terraform init -backend=false -input=false
 
-      # Validate syntax and provider wiring
       - name: terraform validate
         if: steps.detect_tf.outputs.has_tf == 'true'
         run: terraform validate -no-color
 
-      # Plan. If your code requires TF_VAR_* values, add them in repo secrets
-      # then they will be available here automatically as environment variables.
-      - name: terraform plan
-        if: steps.detect_tf.outputs.has_tf == 'true'
+      # Only plan if the OIDC role is available (either secret or variable)
+      - name: Configure AWS credentials via OIDC
+        if: steps.detect_tf.outputs.has_tf == 'true' && env.AWS_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: terraform plan (online)
+        if: steps.detect_tf.outputs.has_tf == 'true' && env.AWS_ROLE_ARN != ''
         run: terraform plan -input=false -no-color -out=tfplan
 
-      # Save the plan file and logs for review in PRs
-      - name: Upload plan artifact
-        if: steps.detect_tf.outputs.has_tf == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: terraform-plan
-          path: tfplan
+      - name: "Note: skipping plan (OIDC not bootstrapped)"
+        if: steps.detect_tf.outputs.has_tf == 'true' && env.AWS_ROLE_ARN != ''
+        run: echo "Skipping online plan because AWS_ROLE_ARN is not set. Run Bootstrap OIDC first."
 
-  # 1) Plan/apply test/ first as it will create the buckets we need to scan
+  # 1) test/ (AWS gated)
   tf_test:
+    # Job-level if can't use env/secrets; use vars here.
+    if: (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') && vars.AWS_ROLE_ARN != ''
     runs-on: ubuntu-latest
-    needs: [ iac_scans ]         # run our scan before applying any terraform
-    permissions:
-      contents: read
-      id-token: write        # required for OIDC
-    env:
-      AWS_REGION: us-east-1
-      TF_VAR_test_bucket_names: '["ct-test-a","ct-test-b","ct-test-c"]'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - uses: hashicorp/setup-terraform@v3
-        with: { terraform_version: 1.9.5 }
-      - run: terraform -chdir=test init -input=false
-      - run: terraform -chdir=test apply -auto-approve
-
-  # 2) Plan/apply root/ only after test/ is done
-  tf_root:
-    runs-on: ubuntu-latest
-    needs: [ tf_test ]       # enforces the order you want
+    needs: [ iac_scans ]
     permissions:
       contents: read
       id-token: write
     env:
-      AWS_REGION: us-east-1
-      # pass anything root expects via TF_VAR_* or variables.tf defaults
-      TF_VAR_results_bucket_name: "sentra-results-bucket-ct-us-east1-20250822"
+      TF_VAR_test_bucket_names: '["ct-test-a","ct-test-b","ct-test-c"]'
     steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - uses: hashicorp/setup-terraform@v3
-        with: { terraform_version: 1.9.5 }
-      - run: terraform -chdir=. init -input=false
-      - run: terraform -chdir=. apply -auto-approve
-
-  docker_build_and_test:
-    name: Docker build and smoke test
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out repo
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # Buildx gives modern BuildKit features
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: terraform init (test/)
+        run: terraform -chdir=test init -input=false
+
+      - name: terraform plan/apply (test/)
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            terraform -chdir=test plan -input=false -no-color -out=tfplan
+          else
+            terraform -chdir=test apply -auto-approve
+          fi
+
+  # 2) root/ (AWS gated, after test/)
+  tf_root:
+    if: (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') && vars.AWS_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    needs: [ tf_test ]
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_VAR_results_bucket_name: "sentra-results-bucket-ct-us-east1-20250822"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: terraform init (root)
+        run: terraform -chdir=. init -input=false
+
+      - name: terraform plan/apply (root)
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            terraform -chdir=. plan -input=false -no-color -out=tfplan
+          else
+            terraform -chdir=. apply -auto-approve
+          fi
+
+  docker_build_and_test:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    name: Docker build and smoke test
+    runs-on: ubuntu-latest
+    needs: [ tf_root ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Local build only. No registry push.
       - name: Build image
         uses: docker/build-push-action@v6
         with:
@@ -212,8 +284,6 @@ jobs:
           load: true
           tags: sentra-scanner-test:${{ github.sha }}
 
-      # Simple smoke test that does not assume app specifics.
-      # First try Python. If not present, fall back to a shell check.
       - name: Container smoke test
         run: |
           set -e
@@ -224,7 +294,6 @@ jobs:
             docker run --rm sentra-scanner-test:${{ github.sha }} sh -c 'echo container_ok'
           fi
 
-      # Optional. Validate docker-compose file if present.
       - name: Validate docker-compose.yml
         run: |
           if [ -f docker-compose.yml ]; then

@@ -1,0 +1,6 @@
+extends: default
+rules:
+  truthy:
+    check-keys: false   # don’t warn on keys like "on"
+  document-start:
+    present: true       # still require '---'
